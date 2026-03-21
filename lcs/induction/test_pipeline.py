@@ -9,7 +9,7 @@ from trd_bootstrap import TrdBootstrapper, graph_to_modal_vector
 
 def main():
     language = "en"
-    max_samples = 50
+    max_samples = 500
     print(f"Streaming {max_samples} sentences from mC4 ({language})...")
 
     parser = UdParser(language)
@@ -35,7 +35,7 @@ def main():
     print(f"Lexicon created with {len(lexicon.entries)} lemmas.")
 
     print("Bootstrapping TRDs...")
-    bootstrapper = TrdBootstrapper(n_clusters=4)
+    bootstrapper = TrdBootstrapper(n_clusters=16)
     trds = bootstrapper.bootstrap(graphs, language)
     print(f"Bootstrapped {len(trds)} TRDs.")
 
