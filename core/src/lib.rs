@@ -21,6 +21,7 @@ pub mod constraints;
 pub mod engine;
 pub mod feedback;
 pub mod generation;
+pub mod lcs;
 pub mod rules;
 pub mod scheduler;
 pub mod semantics;
