@@ -60,7 +60,7 @@ def stream_mc4(
         name=language,
         split=split,
         streaming=True,
-        trust_remote_code=True,
+
     )
 
     count = 0
