@@ -1,0 +1,10 @@
+target/
+Cargo.lock
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+lexicons/
+*_trds.json
+*_lexicon.json
+.env

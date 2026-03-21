@@ -1,0 +1,17 @@
+[package]
+name    = "csrre"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "csrre"
+path = "src/main.rs"
+
+[dependencies]
+csrre-core = { workspace = true }
+tokio      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+log        = { workspace = true }
+env_logger = { workspace = true }
