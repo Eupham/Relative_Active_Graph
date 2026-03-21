@@ -48,6 +48,21 @@ impl CounterfactualScope {
         Self { intervened_edge, nodes, edges, budget }
     }
 
+    /// Build a scope directly from a set of node IDs (no BFS, no edge tracking).
+    /// Useful for tests and cases where the scope nodes are known in advance.
+    pub fn from_nodes(node_ids: Vec<NodeId>) -> Self {
+        let mut nodes = HashSet::new();
+        for id in node_ids {
+            nodes.insert(id);
+        }
+        Self {
+            intervened_edge: 0,
+            nodes,
+            edges: HashSet::new(),
+            budget: usize::MAX,
+        }
+    }
+
     pub fn contains_node(&self, id: NodeId) -> bool {
         self.nodes.contains(&id)
     }

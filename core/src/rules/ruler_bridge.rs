@@ -4,7 +4,7 @@
 //! (Nandi et al. OOPSLA 2021 — Ruler synthesizes rewrite rules by e-graph enumeration.)
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory, TRDId};
+use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory, Direction, TRDId};
 use crate::arg::transient_repr::Tr;
 
 /// A rewrite rule over the MTLG type domain.
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn rule_induced_after_observations() {
         let mut ruler = RulerBridge::new();
-        let ty = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, true);
+        let ty = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right);
 
         // Simulate 10 dissolved TRs with this type transformation, all successful.
         for i in 0..10 {

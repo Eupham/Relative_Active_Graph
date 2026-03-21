@@ -1,60 +1,65 @@
 //! Horn-clause ATMS node.
-//! Base layer invariant: LABEL(v) = singleton {Env} — one minimal environment.
-//! Propagation is O(1) per justification because no label-set management is needed.
+//! Base layer invariant: LABEL(v) = one minimal environment.
+//! A second derivation is accepted only if it is strictly cheaper (fewer assumptions).
+//! Multi-justification label sets are handled by the BF-ATMS layer.
 
 use crate::types::{NodeId, Env};
 use super::env::subsumes;
 
-/// Whether a node is an assumption (primitive) or derived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
     Assumption,
     Derived,
 }
 
-/// An ATMS node in the base (Horn-clause) layer.
 #[derive(Clone, Debug)]
 pub struct BaseNode {
     pub id:   NodeId,
     pub kind: NodeKind,
-    /// The singleton label: None = not yet derived.
-    /// For assumptions, set at construction time to their singleton bit env.
     pub label: Option<Env>,
 }
 
 impl BaseNode {
-    /// Create an assumption node with its own singleton environment bit.
     pub fn assumption(id: NodeId, env_bit: u8) -> Self {
         let env = 1u64 << env_bit;
         Self { id, kind: NodeKind::Assumption, label: Some(env) }
     }
 
-    /// Create a derived node with no label yet.
     pub fn derived(id: NodeId) -> Self {
         Self { id, kind: NodeKind::Derived, label: None }
     }
 
-    /// The node is derived in (supported by) `active_env` if its label is a subset of it.
     pub fn is_active_in(&self, active_env: Env) -> bool {
         self.label.map_or(false, |l| subsumes(l, active_env))
     }
 
-    /// Update label: returns true if the label changed (triggers propagation).
-    /// For Horn-clause base layer: the label can only be set once (monotone).
+    /// Update label under Horn-clause monotonicity:
+    ///
+    /// - If unlabelled: accept unconditionally.
+    /// - If the new env is a strict subset of the existing label: it represents a
+    ///   cheaper proof (fewer assumptions required); replace.
+    /// - Otherwise: discard. The existing label is already minimal or equally
+    ///   minimal. Unioning would incorrectly conjoin independent proofs.
+    ///
+    /// Returns true only when the stored label actually changes, so propagation
+    /// queues are triggered only on genuine updates.
     pub fn set_label(&mut self, env: Env) -> bool {
         match self.label {
             None => {
                 self.label = Some(env);
                 true
             }
-            Some(existing) if existing != env => {
-                // In Horn base layer, this means multiple derivation paths exist.
-                // Take the union (least upper bound) — safe because we only ever add
-                // assumptions, never retract them in the base layer.
-                self.label = Some(existing | env);
-                true
+            Some(existing) => {
+                // Accept iff new env is a proper subset: subsumes(env, existing)
+                // means every bit of env is in existing, i.e. env ⊆ existing.
+                // We additionally require env != existing so it is strictly cheaper.
+                if subsumes(env, existing) && env != existing {
+                    self.label = Some(env);
+                    true
+                } else {
+                    false
+                }
             }
-            _ => false,
         }
     }
 }
@@ -83,11 +88,34 @@ mod tests {
     }
 
     #[test]
-    fn set_label_monotone() {
+    fn set_label_first_time_always_accepted() {
         let mut n = BaseNode::derived(3);
-        assert!(n.set_label(singleton(0)));
-        assert!(!n.set_label(singleton(0))); // no change
-        assert!(n.set_label(singleton(1)));  // union: new bits added
+        assert!(n.set_label(singleton(0) | singleton(1)));
         assert_eq!(n.label, Some(singleton(0) | singleton(1)));
+    }
+
+    #[test]
+    fn set_label_same_env_rejected() {
+        let mut n = BaseNode::derived(3);
+        n.set_label(singleton(0));
+        assert!(!n.set_label(singleton(0)), "identical label must not trigger propagation");
+    }
+
+    #[test]
+    fn set_label_superset_rejected() {
+        let mut n = BaseNode::derived(3);
+        n.set_label(singleton(0));
+        // singleton(0) | singleton(1) is a *superset* — more expensive, must be rejected
+        assert!(!n.set_label(singleton(0) | singleton(1)));
+        assert_eq!(n.label, Some(singleton(0)));
+    }
+
+    #[test]
+    fn set_label_subset_accepted_replaces() {
+        let mut n = BaseNode::derived(3);
+        n.set_label(singleton(0) | singleton(1));
+        // singleton(0) alone is strictly cheaper — should replace
+        assert!(n.set_label(singleton(0)));
+        assert_eq!(n.label, Some(singleton(0)));
     }
 }

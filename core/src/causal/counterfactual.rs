@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::types::{NodeId, EdgeId, TRDId, Env, Quality};
 use crate::causal::{
     scm::Scm,
-    bootstrap::{CausalBootstrapper, QualitySample, compute_causal_delta},
+    bootstrap::{CausalBootstrapper, QualitySample, BootstrapResult, compute_causal_delta},
     intervention::{do_absent, InterventionResult},
 };
 use crate::adaptive::CausalTransitionRegistry;
@@ -67,11 +67,10 @@ impl CounterfactualReasoner {
         let is_causal = self.transition.is_causal(edge_id, trd_id);
 
         let delta = if is_causal {
-            // Causal phase: bootstrap C(e) + frequency + type_consistency
-            let causal_frac  = self.bootstrapper.estimate_causal_fraction(edge_id, trd_id);
-            let freq_score   = self.bootstrapper.frequency_score(edge_id, trd_id);
-            let type_consist = self.estimate_type_consistency(edge_id, graph);
-            compute_causal_delta(causal_frac, freq_score, type_consist, 0.5, 0.3, 0.2)
+            // Causal phase: bootstrapped ATE with CI
+            let result    = self.bootstrapper.estimate_causal_effect(edge_id, trd_id);
+            let frequency = self.bootstrapper.frequency_in_trd(edge_id, trd_id);
+            compute_causal_delta(&result, frequency)
         } else {
             // Correlational phase: freq_successful / freq_total
             self.transition.correlational_score(edge_id, trd_id)

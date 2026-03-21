@@ -3,7 +3,7 @@
 //! canonicalize → candidates → causal analysis → pop() → rule induction → linearize.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, Env, Situation};
+use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, ModalMode, TypeCategory, Direction, Env, Situation};
 use crate::atms::BaseAtms;
 use crate::arg::{
     ContextStack, ArgGraph, ArgSearch, ArgNode, ArgEdge, NodeType, EdgeType,
@@ -23,10 +23,32 @@ use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult};
 /// A query submitted to the engine.
 #[derive(Debug, Clone)]
 pub struct Query {
-    pub text:           String,
-    pub situation_id:   u64,
-    pub trd:            Option<TRDId>,
+    pub text:            String,
+    pub situation_id:    u64,
+    pub trd:             Option<TRDId>,
     pub target_language: String,
+    /// Expected MTLG result type for this query.
+    /// A hypothesis satisfies the query iff its proposition type is compatible
+    /// with this type (same mode and category; arity may differ).
+    /// Defaults to Diamond/Scene/arity=0 when unknown.
+    pub expected_type:   ModalType,
+}
+
+impl Query {
+    pub fn new(text: impl Into<String>, situation_id: u64, target_language: impl Into<String>) -> Self {
+        Self {
+            text:            text.into(),
+            situation_id,
+            trd:             None,
+            target_language: target_language.into(),
+            expected_type:   ModalType::default(),
+        }
+    }
+
+    pub fn with_expected_type(mut self, ty: ModalType) -> Self {
+        self.expected_type = ty;
+        self
+    }
 }
 
 /// The result returned after one full execution cycle.
@@ -99,7 +121,7 @@ impl Engine {
         let stalks       = build_stalks(graph);
         let sheaf_result = check_sheaf_coherence(graph, &stalks);
         if !sheaf_result.is_coherent() {
-            log::warn!("Sheaf H¹={}: {} violations", sheaf_result.h1_norm, sheaf_result.violations.len());
+            log::warn!("Sheaf violations={}: {} triangle inconsistencies", sheaf_result.violation_count, sheaf_result.violations.len());
         }
 
         // ── 5. Graphica memo check ────────────────────────────────────────────
@@ -114,7 +136,7 @@ impl Engine {
 
         // ── 7. Progressive deepening + generation ─────────────────────────────
         let deepener = ProgressiveDeepener::new(trd);
-        let dr = deepener.run(graph, &self.semantics, &self.perf, &mut self.thresholds, &query.text);
+        let dr = deepener.run(graph, &self.semantics, &self.perf, &mut self.thresholds, &query.text, &query.expected_type);
 
         // ── 8. Linearize best hypothesis ──────────────────────────────────────
         let linearizer     = Linearizer::new(&query.target_language);
@@ -168,11 +190,10 @@ impl Default for Engine { fn default() -> Self { Self::new() } }
 mod tests {
     use super::*;
     use crate::arg::ArgNode;
-    use crate::types::{ModalType, ModalMode, TypeCategory};
 
     fn make_node(id: u64, surface: &str, score: f32) -> ArgNode {
         let mut n = ArgNode::new(id, NodeType::Concept,
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, true), (0, 0));
+            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right), (0, 0));
         n.surface = Some(surface.as_bytes().to_vec());
         n.attribution_score = score;
         n.atms_label = 0b1;
@@ -187,6 +208,7 @@ mod tests {
             situation_id:    1,
             trd:             None,
             target_language: "en".into(),
+            expected_type:   ModalType::default(),
         };
         let nodes = vec![make_node(1, "run", 0.9), make_node(2, "alice", 0.7)];
         let result = engine.execute(query, nodes, vec![]);
