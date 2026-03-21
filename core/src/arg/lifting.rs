@@ -3,7 +3,7 @@
 //! this module handles the type transformation component.
 
 use std::collections::HashMap;
-use crate::types::{ModalType, ModalMode, TypeCategory, ContextId};
+use crate::types::{ModalType, ModalMode, TypeCategory, Direction, ContextId};
 use crate::arg::transient_repr::Tr;
 
 /// A lifting rule: transforms a source modal type to a target modal type.
@@ -46,7 +46,7 @@ impl ModalLiftingRule {
                 mode:     self.target_mode,
                 category: self.target_cat,
                 arity:    ty.arity,
-                rightward: ty.rightward,
+                direction: ty.direction,
             })
         } else {
             None

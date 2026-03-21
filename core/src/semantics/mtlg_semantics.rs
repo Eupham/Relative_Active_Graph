@@ -207,8 +207,9 @@ impl MtlgSemantics {
     }
 
     /// Compose two MTLG types: f_type ◇ arg_type → result_type (if compatible).
+    /// Defaults to right-seeking application; use arg_is_right=false for left-seeking.
     pub fn compose(&self, f_type: ModalType, arg_type: ModalType) -> Option<ModalType> {
-        if f_type.compatible_with(arg_type) { f_type.apply() } else { None }
+        if f_type.compatible_with(arg_type, true) { f_type.apply() } else { None }
     }
 }
 

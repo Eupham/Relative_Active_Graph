@@ -1,32 +1,42 @@
-//! Discrete sheaf Laplacian: checks modal-type stalk coherence at merge boundaries.
-//! H¹ ≠ 0 means two derivation paths produce incompatible modal types at a shared node.
+//! Discrete sheaf global-section consistency check over G(s).
 //!
-//! For each triangle (u → v → w) in G(s): check that restriction maps compose consistently.
-//! Stalk F(v) = ModalType at v. Restriction map r_{u→v}: F(u) → F(v).
+//! For each directed triangle (u → v → w, and u → w) in G(s), the restriction
+//! maps along both paths must produce the same expected type at w. A violation
+//! means the two derivation paths are modally inconsistent at their merge point.
+//!
+//! This is a global-section existence check, NOT H¹ computation.
+//! True H¹ requires coboundary operators over a cochain complex
+//! (see Curry, Ghrist & Robinson 2012 for the full algebraic topology treatment).
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory};
+use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory, Direction};
 use crate::arg::{ArgGraph, ArgEdge, edge::EdgeType};
 use petgraph::visit::EdgeRef;
 
-/// Restriction map: given the modal type at the source, what is the expected type at target?
-/// For ◇-mode edges: applies one argument (reduces arity by 1, preserves mode/category).
-/// For □-mode edges: preserves arity (contraction — same resource used twice).
-/// For ◊-mode edges: shifts to discontinuous mode.
+/// Restriction map along one directed edge.
 fn restriction_map(edge: &ArgEdge, source_type: ModalType) -> ModalType {
     match edge.modal_mode {
         ModalMode::Diamond => source_type.apply().unwrap_or(source_type),
-        ModalMode::Box     => source_type, // contraction: type is shared, not consumed
+        ModalMode::Box     => source_type,
         ModalMode::Lozenge => ModalType {
-            mode: ModalMode::Lozenge,
-            category: source_type.category,
-            arity: source_type.arity,
-            rightward: !source_type.rightward, // discontinuous: reverses directionality
+            mode:      ModalMode::Lozenge,
+            category:  source_type.category,
+            arity:     source_type.arity,
+            direction: match source_type.direction {
+                Direction::Right => Direction::Left,
+                Direction::Left  => Direction::Right,
+            },
         },
     }
 }
 
-/// Coherence violation: two paths to the same node produce different expected types.
+/// Two types are consistent if their mode and category agree.
+/// Arity differences are acceptable: partial application produces a different
+/// saturation level but the same modal character.
+fn types_consistent(a: ModalType, b: ModalType) -> bool {
+    a.mode == b.mode && a.category == b.category
+}
+
 #[derive(Debug)]
 pub struct CoherenceViolation {
     pub node_u:         NodeId,
@@ -36,50 +46,48 @@ pub struct CoherenceViolation {
     pub via_uw_type:    ModalType,
 }
 
-/// Result of the sheaf coherence check.
+/// Result of the sheaf consistency check.
+///
+/// `violation_count` is the number of triangles where the two restriction-map
+/// paths produce different modal types at their shared target.
+/// Zero violations means global sections exist for the observed triangles.
 #[derive(Debug)]
 pub struct SheafResult {
-    pub h1_norm:    f32,  // 0.0 = coherent; > 0.0 means |H¹| violations
-    pub violations: Vec<CoherenceViolation>,
+    /// Number of triangle coherence violations.
+    /// This is NOT a cohomology rank — it is a raw inconsistency count.
+    pub violation_count: usize,
+    pub violations:      Vec<CoherenceViolation>,
 }
 
 impl SheafResult {
-    pub fn is_coherent(&self) -> bool { self.h1_norm == 0.0 }
+    pub fn is_coherent(&self) -> bool { self.violation_count == 0 }
 }
 
-/// Check sheaf coherence over G(s): find all triangles and verify restriction map consistency.
 pub fn check_sheaf_coherence(
     graph:  &ArgGraph,
     stalks: &HashMap<NodeId, ModalType>,
 ) -> SheafResult {
     let mut violations = Vec::new();
-
-    // Build adjacency: NodeId → [(neighbor NodeId, edge weight)]
     let node_indices: Vec<_> = graph.node_indices().collect();
 
     for &u_idx in &node_indices {
-        let u_id = graph[u_idx].id;
+        let u_id   = graph[u_idx].id;
         let u_type = match stalks.get(&u_id) { Some(t) => *t, None => continue };
 
-        // Edges u → v
         for uv in graph.edges(u_idx) {
-            let v_idx = uv.target();
-            let v_id  = graph[v_idx].id;
+            let v_idx            = uv.target();
+            let v_id             = graph[v_idx].id;
             let type_at_v_via_uv = restriction_map(uv.weight(), u_type);
 
-            // Edges v → w
             for vw in graph.edges(v_idx) {
                 let w_idx = vw.target();
                 let w_id  = graph[w_idx].id;
 
-                // Look for direct edge u → w
-                let uw_edge = graph.edges(u_idx).find(|e| e.target() == w_idx);
-                if let Some(uw) = uw_edge {
-                    // Two paths: u→v→w and u→w
+                if let Some(uw) = graph.edges(u_idx).find(|e| e.target() == w_idx) {
                     let via_path = restriction_map(vw.weight(), type_at_v_via_uv);
                     let direct   = restriction_map(uw.weight(), u_type);
 
-                    if !types_cohere(via_path, direct) {
+                    if !types_consistent(via_path, direct) {
                         violations.push(CoherenceViolation {
                             node_u: u_id,
                             node_v: v_id,
@@ -93,43 +101,32 @@ pub fn check_sheaf_coherence(
         }
     }
 
-    let h1_norm = violations.len() as f32;
-    SheafResult { h1_norm, violations }
-}
-
-/// Two types cohere if they agree on mode and category (arity differences are acceptable
-/// since arity represents remaining unsaturated arguments, which can differ by path).
-fn types_cohere(a: ModalType, b: ModalType) -> bool {
-    a.mode == b.mode && a.category == b.category
+    SheafResult { violation_count: violations.len(), violations }
 }
 
 /// Build stalk map from the ARG graph's node modal types.
 pub fn build_stalks(graph: &ArgGraph) -> HashMap<NodeId, ModalType> {
     graph.node_indices()
-        .map(|idx| {
-            let n = &graph[idx];
-            (n.id, n.mtlg_type)
-        })
+        .map(|idx| { let n = &graph[idx]; (n.id, n.mtlg_type) })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModalMode, TypeCategory, ModalType};
+    use crate::types::{ModalMode, TypeCategory, ModalType, Direction};
     use crate::arg::{ArgNode, NodeType, ArgEdge, EdgeType};
     use crate::arg::search::ArgGraph;
     use petgraph::stable_graph::StableGraph;
 
     fn diamond_type() -> ModalType {
-        ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, true)
+        ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right)
     }
 
     #[test]
     fn coherent_triangle_passes() {
-        // u -◇→ v -◇→ w, u -◇→ w: types should cohere after ◇ application
         let mut g: ArgGraph = StableGraph::new();
-        let u_type = diamond_type();
+        let u_type  = diamond_type();
         let applied = u_type.apply().unwrap();
 
         let mut n_u = ArgNode::new(1, NodeType::Concept, u_type, (0,0));
@@ -146,7 +143,16 @@ mod tests {
 
         let stalks = build_stalks(&g);
         let result = check_sheaf_coherence(&g, &stalks);
-        // No violations on a coherent ◇-composed triangle
         assert!(result.is_coherent(), "violations: {:?}", result.violations);
+    }
+
+    #[test]
+    fn violation_count_not_h1() {
+        // Explicit documentation test: verify the field name and semantics.
+        let result = SheafResult { violation_count: 0, violations: vec![] };
+        assert!(result.is_coherent());
+        // The field is violation_count, not h1_norm.
+        // Any code referencing h1_norm will fail to compile, which is the intent.
+        let _ = result.violation_count;
     }
 }

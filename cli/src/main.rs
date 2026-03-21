@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use csrre_core::{
     Engine, Query, Quality,
     arg::{ArgNode, NodeType, ArgEdge, EdgeType},
-    types::{ModalType, ModalMode, TypeCategory, TRDId},
+    types::{ModalType, ModalMode, TypeCategory, Direction, TRDId},
 };
 
 // ─── Wire protocol types ──────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ fn wire_node_to_arg(w: WireNode) -> ArgNode {
     let cat   = parse_category(w.cat.as_deref());
     let arity = w.arity.unwrap_or(0);
     let mt    = if arity > 0 {
-        ModalType::functor(mode, cat, arity, true)
+        ModalType::functor(mode, cat, arity, Direction::Right)
     } else {
         ModalType::atom(mode, cat)
     };
@@ -154,6 +154,7 @@ fn main() -> Result<()> {
                     situation_id:    wq.situation_id,
                     trd:             wq.trd,
                     target_language: wq.language,
+                    expected_type:   ModalType::default(),
                 };
                 let result = engine.execute(query, nodes, edges);
                 let wire = WireResult {

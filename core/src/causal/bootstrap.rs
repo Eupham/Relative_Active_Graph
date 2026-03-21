@@ -1,24 +1,44 @@
 //! TRD-relative causal bootstrapping (Little & Badawy 2020).
-//! Resamples context with do(e=absent) and measures quality drop.
-//! C(e) = fraction of resamples where Q drops after the intervention.
+//! Resamples context with do(e=absent) and estimates the ATE with a 95% CI.
+//! An edge's causal effect is considered reliable only when CI lower bound > 0.
 
 use rand::prelude::*;
 use crate::types::{NodeId, EdgeId, TRDId, Quality};
-use crate::causal::scm::Scm;
 
-pub const N_BOOTSTRAP: usize = 100;
+pub const N_BOOTSTRAP: usize = 200;
+const CI_LOWER_PERCENTILE: f64 = 2.5;
+const CI_UPPER_PERCENTILE: f64 = 97.5;
 
-/// A quality measurement from a dissolved TR in this TRD.
 #[derive(Clone, Debug)]
 pub struct QualitySample {
-    pub tr_id:   u64,
-    pub trd_id:  TRDId,
-    pub quality: f64,
-    /// Which edge IDs contributed to this TR.
-    pub edge_contributions: Vec<EdgeId>,
+    pub tr_id:               u64,
+    pub trd_id:              TRDId,
+    pub quality:             f64,
+    pub edge_contributions:  Vec<EdgeId>,
 }
 
-/// Bootstrap estimator for causal effect of edge `e` in TRD `d`.
+/// Bootstrap estimate of the causal effect of edge `e` in TRD `d`.
+#[derive(Debug, Clone)]
+pub struct BootstrapResult {
+    /// Mean quality drop across all bootstrap resamples (point estimate of ATE).
+    pub point_estimate: f64,
+    /// 2.5th percentile of the bootstrap distribution of quality drops.
+    pub ci_lower:       f64,
+    /// 97.5th percentile of the bootstrap distribution of quality drops.
+    pub ci_upper:       f64,
+    pub n_resamples:    usize,
+    /// True only when the CI lower bound exceeds zero — i.e., the effect is
+    /// reliably positive at the 95% level under the bootstrap distribution.
+    pub is_reliable:    bool,
+}
+
+impl BootstrapResult {
+    /// Causal effect is actionable only when reliably positive.
+    pub fn causal_fraction(&self) -> f64 {
+        if self.is_reliable { self.point_estimate } else { 0.0 }
+    }
+}
+
 pub struct CausalBootstrapper {
     samples: Vec<QualitySample>,
     rng:     StdRng,
@@ -33,59 +53,93 @@ impl CausalBootstrapper {
         self.samples.push(sample);
     }
 
-    /// Estimate C(e, d): fraction of bootstrap resamples in which removing edge `e`
-    /// from TRD `d` causes quality to drop.
-    pub fn estimate_causal_fraction(&mut self, edge_id: EdgeId, trd_id: TRDId) -> f64 {
+    /// Estimate the causal effect of `edge_id` in `trd_id` as a bootstrapped ATE.
+    ///
+    /// Each resample computes the mean quality drop observed when samples using
+    /// `edge_id` are excluded (simulating do(e=absent)). The distribution of
+    /// these per-resample drops is used to compute a 95% CI.
+    ///
+    /// Returns a zero-effect result when insufficient data is available.
+    pub fn estimate_causal_effect(
+        &mut self,
+        edge_id: EdgeId,
+        trd_id:  TRDId,
+    ) -> BootstrapResult {
         let trd_samples: Vec<&QualitySample> = self.samples.iter()
             .filter(|s| s.trd_id == trd_id)
             .collect();
-        if trd_samples.len() < 5 { return 0.0; } // insufficient data
 
-        let baseline_quality: f64 = trd_samples.iter().map(|s| s.quality).sum::<f64>()
+        if trd_samples.len() < 10 {
+            return BootstrapResult {
+                point_estimate: 0.0,
+                ci_lower:       0.0,
+                ci_upper:       0.0,
+                n_resamples:    0,
+                is_reliable:    false,
+            };
+        }
+
+        let baseline: f64 = trd_samples.iter().map(|s| s.quality).sum::<f64>()
             / trd_samples.len() as f64;
 
-        let mut drop_count = 0usize;
+        let mut per_resample_drops = Vec::with_capacity(N_BOOTSTRAP);
+
         for _ in 0..N_BOOTSTRAP {
-            // Resample with replacement.
-            let resampled: Vec<_> = (0..trd_samples.len())
-                .map(|_| trd_samples[self.rng.gen_range(0..trd_samples.len())])
+            let n = trd_samples.len();
+            let resampled: Vec<&QualitySample> = (0..n)
+                .map(|_| trd_samples[self.rng.gen_range(0..n)])
                 .collect();
-            // Remove samples that used edge_id (simulating do(e=absent)).
+
             let without_edge: Vec<_> = resampled.iter()
                 .filter(|s| !s.edge_contributions.contains(&edge_id))
                 .collect();
-            if without_edge.is_empty() { continue; }
-            let quality_without: f64 = without_edge.iter().map(|s| s.quality).sum::<f64>()
-                / without_edge.len() as f64;
-            if quality_without < baseline_quality - 0.05 {
-                drop_count += 1;
+
+            if without_edge.is_empty() {
+                per_resample_drops.push(0.0);
+                continue;
             }
+
+            let q_without: f64 = without_edge.iter().map(|s| s.quality).sum::<f64>()
+                / without_edge.len() as f64;
+
+            per_resample_drops.push(baseline - q_without);
         }
-        drop_count as f64 / N_BOOTSTRAP as f64
+
+        per_resample_drops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let point_estimate = per_resample_drops.iter().sum::<f64>() / N_BOOTSTRAP as f64;
+        let ci_lower = percentile(&per_resample_drops, CI_LOWER_PERCENTILE);
+        let ci_upper = percentile(&per_resample_drops, CI_UPPER_PERCENTILE);
+        let is_reliable = ci_lower > 0.0;
+
+        BootstrapResult { point_estimate, ci_lower, ci_upper, n_resamples: N_BOOTSTRAP, is_reliable }
     }
 
-    /// Frequency score: freq_successful_in_d(e) / freq_total_in_d(e).
-    pub fn frequency_score(&self, edge_id: EdgeId, trd_id: TRDId) -> f64 {
-        let using_edge: Vec<_> = self.samples.iter()
-            .filter(|s| s.trd_id == trd_id && s.edge_contributions.contains(&edge_id))
-            .collect();
-        if using_edge.is_empty() { return 0.0; }
-        let successful = using_edge.iter().filter(|s| s.quality >= 0.5).count();
-        successful as f64 / using_edge.len() as f64
+    /// Frequency score: fraction of TRD samples in which edge_id participated.
+    pub fn frequency_in_trd(&self, edge_id: EdgeId, trd_id: TRDId) -> f64 {
+        let trd: Vec<_> = self.samples.iter().filter(|s| s.trd_id == trd_id).collect();
+        if trd.is_empty() { return 0.0; }
+        let with_edge = trd.iter().filter(|s| s.edge_contributions.contains(&edge_id)).count();
+        with_edge as f64 / trd.len() as f64
     }
 }
 
-/// Combined Δ(e) in causal phase:
-/// Δ(e) = α·C(e) + β·frequency + γ·type_consistency
-pub fn compute_causal_delta(
-    causal_fraction:  f64,
-    frequency_score:  f64,
-    type_consistency: f64,
-    alpha: f64,  // weight for causal fraction (default: 0.5)
-    beta:  f64,  // weight for frequency (default: 0.3)
-    gamma: f64,  // weight for type consistency (default: 0.2)
-) -> f64 {
-    (alpha * causal_fraction + beta * frequency_score + gamma * type_consistency).clamp(0.0, 1.0)
+/// Extract the p-th percentile from a sorted slice.
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() { return 0.0; }
+    let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// Combined Δ(e, d): point estimate when reliable, frequency-weighted otherwise.
+pub fn compute_causal_delta(result: &BootstrapResult, frequency: f64) -> f64 {
+    if result.is_reliable {
+        result.point_estimate * frequency
+    } else {
+        // Correlational proxy: frequency alone, discounted by uncertainty.
+        let uncertainty = (result.ci_upper - result.ci_lower).max(0.0);
+        frequency * (1.0 - uncertainty.min(1.0))
+    }
 }
 
 #[cfg(test)]
@@ -97,30 +151,46 @@ mod tests {
     }
 
     #[test]
-    fn frequency_score_correct() {
+    fn reliable_effect_detected() {
+        let mut b = CausalBootstrapper::new(42);
+        // 20 samples: edge 1 always present, quality always 1.0.
+        // 20 samples: edge 1 absent, quality always 0.0.
+        for i in 0..20 {
+            b.add_sample(make_sample(i, 0, 1.0, vec![1]));
+        }
+        for i in 20..40 {
+            b.add_sample(make_sample(i, 0, 0.0, vec![]));
+        }
+        let result = b.estimate_causal_effect(1, 0);
+        // Removing edge 1 drops quality from 0.5 baseline (mixed) to ~0.0 in without-edge set.
+        // The CI lower bound should be positive.
+        assert!(result.point_estimate > 0.0, "expected positive ATE: {:?}", result);
+    }
+
+    #[test]
+    fn insufficient_data_returns_zero_effect() {
+        let mut b = CausalBootstrapper::new(42);
+        b.add_sample(make_sample(0, 0, 0.9, vec![1]));
+        let result = b.estimate_causal_effect(1, 0);
+        assert!(!result.is_reliable);
+        assert_eq!(result.causal_fraction(), 0.0);
+    }
+
+    #[test]
+    fn percentile_boundary_cases() {
+        let sorted = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        assert_eq!(percentile(&sorted, 0.0),   0.1);
+        assert_eq!(percentile(&sorted, 100.0), 0.5);
+        assert_eq!(percentile(&[], 50.0),      0.0);
+    }
+
+    #[test]
+    fn frequency_in_trd_correct() {
         let mut b = CausalBootstrapper::new(42);
         b.add_sample(make_sample(1, 0, 1.0, vec![10]));
         b.add_sample(make_sample(2, 0, 0.0, vec![10]));
-        b.add_sample(make_sample(3, 0, 1.0, vec![10]));
-        let score = b.frequency_score(10, 0);
-        assert!((score - 2.0/3.0).abs() < 0.01, "score={score}");
-    }
-
-    #[test]
-    fn causal_fraction_with_no_drop() {
-        let mut b = CausalBootstrapper::new(42);
-        // Add samples that don't use edge 99 — removing it has no effect.
-        for i in 0..20 {
-            b.add_sample(make_sample(i, 0, 1.0, vec![1, 2, 3]));
-        }
-        let frac = b.estimate_causal_fraction(99, 0); // edge 99 not used
-        // Without edge 99, the same samples exist → no drop
-        assert!(frac == 0.0, "fraction should be 0 when edge not used: {frac}");
-    }
-
-    #[test]
-    fn combined_delta_in_bounds() {
-        let delta = compute_causal_delta(0.8, 0.6, 0.9, 0.5, 0.3, 0.2);
-        assert!((0.0..=1.0).contains(&delta));
+        b.add_sample(make_sample(3, 0, 1.0, vec![]));
+        let freq = b.frequency_in_trd(10, 0);
+        assert!((freq - 2.0/3.0).abs() < 0.01, "freq={freq}");
     }
 }

@@ -1,25 +1,24 @@
 //! BF-ATMS: bounded, non-Horn ATMS for causal counterfactual reasoning.
 //! (Provan & Singh 1991 — polynomial search bounded by label complexity k.)
 //!
-//! Operates exclusively within a CounterfactualScope. NOGOOD from this layer
-//! propagates back to the Horn base layer to trigger TR dissolution.
+//! The intervention mechanism works through ATMS assumptions, not edge IDs.
+//! To remove edge e: add a NOGOOD for the assumption bits that justified e,
+//! then count how many scope nodes lose all support.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, Env};
+use crate::types::{NodeId, Env};
 use super::scope::CounterfactualScope;
 use crate::atms::base::env::{singleton, union, subsumes};
 
 /// Maximum label set size (k in BF-ATMS). Polynomial guarantee holds for k ≤ 4.
 const MAX_LABEL_COMPLEXITY: usize = 4;
 
-/// A node in the BF-ATMS layer.
 #[derive(Clone, Debug)]
 pub struct BfNode {
-    pub id:   NodeId,
-    /// Set of minimal supporting environments (non-Horn: can have multiple).
+    pub id:     NodeId,
+    /// Minimal supporting environments (non-Horn: can have multiple).
     pub labels: Vec<Env>,
-    /// Attribution score used as cost in the search (from dissolved TR traces).
-    pub cost: f64,
+    pub cost:   f64,
 }
 
 impl BfNode {
@@ -27,9 +26,11 @@ impl BfNode {
         Self { id, labels: Vec::new(), cost }
     }
 
-    /// Add a new minimal label, maintaining minimality.
+    /// Add a new minimal label, maintaining minimality of the label set.
     pub fn add_label(&mut self, env: Env) {
+        // Drop new label if it is already subsumed by an existing minimal label.
         if self.labels.iter().any(|&l| subsumes(l, env)) { return; }
+        // Drop any existing labels that are subsumed by (less minimal than) the new one.
         self.labels.retain(|&l| !subsumes(env, l));
         if self.labels.len() < MAX_LABEL_COMPLEXITY {
             self.labels.push(env);
@@ -39,87 +40,92 @@ impl BfNode {
     pub fn is_supported_in(&self, env: Env) -> bool {
         self.labels.iter().any(|&l| subsumes(l, env))
     }
+
+    /// Remove support derived from assumptions covered by `nogood`.
+    /// A label is retracted if it overlaps with the nogood (it depended on a
+    /// now-contradicted assumption).
+    pub fn retract_labels_using(&mut self, nogood: Env) {
+        self.labels.retain(|&l| l & nogood == 0);
+    }
 }
 
-/// Result of a BF-ATMS counterfactual query.
 #[derive(Debug)]
 pub struct CounterfactualResult {
-    /// Fraction of re-sampled contexts where quality drops after do(e=absent).
+    /// Fraction of scope nodes that lost all support after the intervention.
     pub causal_fraction: f64,
-    /// The NOGOOD to inject into the base layer (if intervention creates contradiction).
+    /// NOGOOD injected into the base layer (the assumption bits that were contradicted).
     pub nogood: Option<Env>,
 }
 
-/// BF-ATMS engine, scoped to a single CounterfactualScope.
 pub struct BfAtms {
-    nodes: HashMap<NodeId, BfNode>,
-    scope: CounterfactualScope,
+    nodes:   HashMap<NodeId, BfNode>,
+    scope:   CounterfactualScope,
+    /// NOGOODs accumulated during this counterfactual scope.
+    nogoods: Vec<Env>,
 }
 
 impl BfAtms {
     pub fn new(scope: CounterfactualScope) -> Self {
-        Self { nodes: HashMap::new(), scope }
+        Self { nodes: HashMap::new(), scope, nogoods: Vec::new() }
     }
 
-    /// Seed nodes from the base layer with their costs (attribution scores).
     pub fn seed_node(&mut self, id: NodeId, base_env: Env, cost: f64) {
         if !self.scope.contains_node(id) { return; }
         let node = self.nodes.entry(id).or_insert_with(|| BfNode::new(id, cost));
         node.add_label(base_env);
     }
 
-    /// Run the counterfactual: remove `intervened_edge` and propagate belief revision.
-    /// Returns fraction of scope nodes that lose support (proxy for causal effect).
-    pub fn run_intervention(&mut self, intervened_edge: EdgeId, active_env: Env) -> CounterfactualResult {
-        // Before intervention: count supported nodes in scope.
+    /// Execute do(edge_assumption_bits = absent).
+    ///
+    /// `edge_assumptions` is the union of assumption bits that participate in
+    /// any justification that flows through the intervened edge. These come from
+    /// the caller resolving the edge's ATMS provenance before calling here.
+    ///
+    /// The NOGOOD is injected, labels depending on those bits are retracted,
+    /// and the causal fraction is measured as the proportion of scope nodes
+    /// that no longer hold any supporting environment.
+    pub fn run_intervention(
+        &mut self,
+        edge_assumptions: Env,
+        active_env: Env,
+    ) -> CounterfactualResult {
+        if edge_assumptions == 0 {
+            // No resolvable assumption bits — intervention is a no-op.
+            return CounterfactualResult { causal_fraction: 0.0, nogood: None };
+        }
+
+        let scope_size: usize = self.nodes.values()
+            .filter(|n| self.scope.contains_node(n.id))
+            .count();
+        if scope_size == 0 {
+            return CounterfactualResult { causal_fraction: 0.0, nogood: None };
+        }
+
+        // Count supported nodes before intervention.
         let before: usize = self.nodes.values()
             .filter(|n| self.scope.contains_node(n.id) && n.is_supported_in(active_env))
             .count();
 
-        // Remove the intervened edge from all labels that depended on it.
-        // We model this by removing labels that have the edge's assumption bit.
-        // (The edge's assumption bit is derived from its EdgeId hash into 0..63.)
-        let edge_bit = (intervened_edge % 63) as u8;
-        let intervention_env = !singleton(edge_bit) & active_env;
+        // Apply the NOGOOD: retract any label that overlaps the contradicted bits.
+        self.nogoods.push(edge_assumptions);
+        for node in self.nodes.values_mut() {
+            node.retract_labels_using(edge_assumptions);
+        }
 
-        // After intervention: count supported nodes in scope.
+        // Count supported nodes after intervention.
         let after: usize = self.nodes.values()
-            .filter(|n| self.scope.contains_node(n.id) && n.is_supported_in(intervention_env))
+            .filter(|n| self.scope.contains_node(n.id) && n.is_supported_in(active_env))
             .count();
 
-        let total = self.scope.node_count().max(1);
-        let lost = before.saturating_sub(after);
-        let causal_fraction = lost as f64 / total as f64;
-
-        // If the intervention leaves a core node without any support, inject a nogood.
-        let nogood = if causal_fraction > 0.5 {
-            Some(active_env) // The full active environment is now inconsistent given this edge's absence.
+        let causal_fraction = if before == 0 {
+            0.0
         } else {
-            None
+            (before - after) as f64 / before as f64
         };
 
+        let nogood = if causal_fraction > 0.5 { Some(edge_assumptions) } else { None };
+
         CounterfactualResult { causal_fraction, nogood }
-    }
-
-    /// Compute weighted causal effect: C(e) = causal_fraction weighted by node costs.
-    pub fn weighted_causal_effect(&self, intervened_edge: EdgeId, active_env: Env) -> f64 {
-        let edge_bit = (intervened_edge % 63) as u8;
-        let intervention_env = !singleton(edge_bit) & active_env;
-
-        let mut total_cost = 0.0f64;
-        let mut lost_cost  = 0.0f64;
-
-        for node in self.nodes.values() {
-            if !self.scope.contains_node(node.id) { continue; }
-            total_cost += node.cost;
-            let had_support  = node.is_supported_in(active_env);
-            let still_has    = node.is_supported_in(intervention_env);
-            if had_support && !still_has {
-                lost_cost += node.cost;
-            }
-        }
-        if total_cost == 0.0 { return 0.0; }
-        lost_cost / total_cost
     }
 }
 
@@ -127,25 +133,35 @@ impl BfAtms {
 mod tests {
     use super::*;
     use crate::atms::base::env::singleton;
+    use crate::atms::causal::scope::CounterfactualScope;
 
-    fn make_scope() -> CounterfactualScope {
-        CounterfactualScope::build(42, 0, 10, |n| {
-            if n < 4 { vec![(n + 1, n * 10 + 42)] } else { vec![] }
-        })
+    fn trivial_scope(node_ids: Vec<crate::types::NodeId>) -> CounterfactualScope {
+        CounterfactualScope::from_nodes(node_ids)
     }
 
     #[test]
-    fn intervention_reduces_support() {
-        let scope = make_scope();
-        let active = singleton(0) | singleton(1) | singleton(2);
+    fn intervention_retracts_dependent_labels() {
+        let scope = trivial_scope(vec![1, 2]);
         let mut bf = BfAtms::new(scope);
-        bf.seed_node(0, active, 1.0);
-        bf.seed_node(1, active, 1.0);
-        bf.seed_node(2, active, 1.0);
+        // Node 1 labelled with assumption bit 0; node 2 labelled with bit 1.
+        bf.seed_node(1, singleton(0), 0.5);
+        bf.seed_node(2, singleton(1), 0.5);
 
-        // Intervene on an edge that is in the scope
-        let result = bf.run_intervention(42, active);
-        // causal_fraction should be >= 0
-        assert!(result.causal_fraction >= 0.0);
+        let active = singleton(0) | singleton(1);
+        // Intervene on assumption bit 0 (the edge that node 1 depends on).
+        let result = bf.run_intervention(singleton(0), active);
+
+        // Node 1 lost support; node 2 still supported.
+        assert!(result.causal_fraction > 0.0 && result.causal_fraction <= 1.0);
+    }
+
+    #[test]
+    fn zero_assumption_bits_is_noop() {
+        let scope = trivial_scope(vec![1]);
+        let mut bf = BfAtms::new(scope);
+        bf.seed_node(1, singleton(0), 0.5);
+        let result = bf.run_intervention(0, singleton(0));
+        assert_eq!(result.causal_fraction, 0.0);
+        assert!(result.nogood.is_none());
     }
 }

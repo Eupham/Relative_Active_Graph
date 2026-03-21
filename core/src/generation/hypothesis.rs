@@ -1,7 +1,7 @@
 //! Hypothesis generation: N candidates from MTLG derivations, ranked by relevance in G(s).
 
 use std::collections::HashMap;
-use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory, Env};
+use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory, Env, Direction};
 use crate::arg::{ArgGraph, ArgNode, search::ArgSearch};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::adaptive::PerfRegistry;
@@ -27,7 +27,6 @@ impl Hypothesis {
         semantics: &MtlgSemantics,
         relevance: f32,
     ) -> Self {
-        // Build a simple predicate λ-term from the node's surface form and type.
         let surface = node.surface_str().unwrap_or("_");
         let term = LambdaTerm::Pred(
             surface.to_string(),
@@ -65,7 +64,6 @@ pub fn generate_hypotheses(
     active_trd: Option<TRDId>,
     perf:       &PerfRegistry,
 ) -> Vec<Hypothesis> {
-    // Rank all nodes by relevance.
     let mut ranked: Vec<_> = graph.node_indices()
         .map(|idx| {
             let node = &graph[idx];
@@ -75,16 +73,33 @@ pub fn generate_hypotheses(
         .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Take top N, build hypotheses.
     ranked.into_iter().take(N_HYPOTHESES).enumerate().map(|(id, (node, rel))| {
         Hypothesis::from_node(id, node, semantics, rel)
     }).collect()
 }
 
-/// Filter hypotheses that satisfy the query (basic: hypothesis root matches query predicate).
-pub fn filter_satisfying(hyps: Vec<Hypothesis>, query_predicate: &str) -> Vec<Hypothesis> {
+/// Filter hypotheses that satisfy the query's expected MTLG result type.
+///
+/// A hypothesis satisfies the query when its root predicate's modal type shares
+/// the same mode and category as `expected_type`. Arity is not required to match:
+/// a partially-applied functor (arity > 0) can satisfy an atomic query type
+/// (arity = 0) because it will be further reduced during linearization.
+///
+/// This replaces substring matching, which conflates surface form with
+/// semantic content.
+pub fn filter_satisfying(
+    hyps:          Vec<Hypothesis>,
+    expected_type: &ModalType,
+    type_map:      &HashMap<String, ModalType>,
+) -> Vec<Hypothesis> {
     hyps.into_iter().filter(|h| {
-        h.proposition.root == query_predicate || h.lambda_str.contains(query_predicate)
+        let root_type = type_map
+            .get(&h.proposition.root)
+            .copied()
+            .unwrap_or(ModalType::default());
+        // Mode and category must agree; arity difference is acceptable.
+        root_type.mode == expected_type.mode
+            && root_type.category == expected_type.category
     }).collect()
 }
 
@@ -92,12 +107,13 @@ pub fn filter_satisfying(hyps: Vec<Hypothesis>, query_predicate: &str) -> Vec<Hy
 mod tests {
     use super::*;
     use crate::arg::{ArgNode, NodeType};
-    use crate::types::{ModalType, ModalMode, TypeCategory};
+    use crate::types::{ModalType, ModalMode, TypeCategory, Direction};
     use petgraph::stable_graph::StableGraph;
+    use crate::arg::search::ArgGraph;
 
     fn node(id: u64, surface: &str, score: f32) -> ArgNode {
         let mut n = ArgNode::new(id, NodeType::Concept,
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, true), (0,0));
+            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right), (0,0));
         n.surface = Some(surface.as_bytes().to_vec());
         n.attribution_score = score;
         n.atms_label = 0b1;
@@ -114,5 +130,44 @@ mod tests {
         let hyps = generate_hypotheses(&g, &sem, None, &perf);
         assert!(!hyps.is_empty());
         assert_eq!(hyps[0].proposition.root, "run"); // highest attribution first
+    }
+
+    #[test]
+    fn type_compatible_hypothesis_passes() {
+        let mut g: ArgGraph = StableGraph::new();
+        g.add_node(node(1, "run", 0.9));
+
+        let sem  = MtlgSemantics::new();
+        let perf = PerfRegistry::new(0.25);
+        let hyps = generate_hypotheses(&g, &sem, None, &perf);
+
+        let mut type_map = HashMap::new();
+        type_map.insert(
+            "run".into(),
+            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+        );
+        let expected = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+        let satisfying = filter_satisfying(hyps, &expected, &type_map);
+        assert!(!satisfying.is_empty(), "run should satisfy a Scene query");
+    }
+
+    #[test]
+    fn mode_mismatch_rejected() {
+        let mut g: ArgGraph = StableGraph::new();
+        g.add_node(node(1, "run", 0.9));
+
+        let sem  = MtlgSemantics::new();
+        let perf = PerfRegistry::new(0.25);
+        let hyps = generate_hypotheses(&g, &sem, None, &perf);
+
+        let mut type_map = HashMap::new();
+        type_map.insert(
+            "run".into(),
+            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+        );
+        // Query expects Box mode — run is Diamond mode — should be rejected.
+        let expected = ModalType::atom(ModalMode::Box, TypeCategory::Scene);
+        let satisfying = filter_satisfying(hyps, &expected, &type_map);
+        assert!(satisfying.is_empty(), "mode mismatch should not satisfy");
     }
 }

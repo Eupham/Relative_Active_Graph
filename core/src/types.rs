@@ -1,6 +1,7 @@
 //! Shared primitive types for CSRRE.
 //! Everything here is Copy-sized so it can cross module boundaries cheaply.
 
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 // ─── Identifier types ────────────────────────────────────────────────────────
@@ -23,6 +24,19 @@ pub enum ModalMode {
     Lozenge,  // ◊  discontinuous       — displacement calculus, scope/long-range
 }
 
+/// Argument directionality in the type-logical grammar.
+///
+/// In MTLG, `A/B` (Right) means the functor seeks its B argument to the right.
+/// `A\B` (Left) means the functor seeks its B argument to the left.
+/// These are distinct type constructors with distinct sequent calculus rules
+/// (Moot & Retoré 2012 §2). A boolean is insufficient: it hides the semantic
+/// content of the distinction from any reader of the type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Direction {
+    Right,  // /  — functor seeks argument to the right
+    Left,   // \  — functor seeks argument to the left
+}
+
 /// UCCA-grounded semantic categories (typologically stable per BLT universals).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypeCategory {
@@ -35,36 +49,44 @@ pub enum TypeCategory {
     Ground,
 }
 
-/// MTLG modal type: mode ⊗ category ⊗ arity.
-/// Directionality (/ vs \) is encoded in the signed arity: positive = right-arg, negative = left-arg.
+/// MTLG modal type: mode ⊗ category ⊗ arity ⊗ direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ModalType {
-    pub mode:     ModalMode,
-    pub category: TypeCategory,
-    /// Number of remaining arguments (0 = saturated).
-    pub arity:    u8,
-    /// True = functor takes argument to the right (◇/), False = to the left (◇\).
-    pub rightward: bool,
+    pub mode:      ModalMode,
+    pub category:  TypeCategory,
+    /// Number of remaining unsaturated arguments (0 = fully saturated atom).
+    pub arity:     u8,
+    /// Which side the next argument must come from.
+    pub direction: Direction,
 }
 
 impl ModalType {
     pub fn atom(mode: ModalMode, category: TypeCategory) -> Self {
-        Self { mode, category, arity: 0, rightward: true }
+        Self { mode, category, arity: 0, direction: Direction::Right }
     }
 
-    pub fn functor(mode: ModalMode, category: TypeCategory, arity: u8, rightward: bool) -> Self {
-        Self { mode, category, arity, rightward }
+    pub fn functor(mode: ModalMode, category: TypeCategory, arity: u8, dir: Direction) -> Self {
+        Self { mode, category, arity, direction: dir }
     }
 
-    /// Apply one argument; returns the result type after consuming one slot.
+    /// Consume one argument slot; returns the result type or None if saturated.
     pub fn apply(self) -> Option<Self> {
         if self.arity == 0 { return None; }
         Some(Self { arity: self.arity - 1, ..self })
     }
 
-    /// Two types are compatible for composition if modes agree and result arity is consistent.
-    pub fn compatible_with(self, arg: ModalType) -> bool {
-        self.mode == arg.mode && self.arity > 0
+    /// True if this functor can combine with an argument type at the given position.
+    ///
+    /// `arg_is_right` must reflect where the argument sits relative to the functor
+    /// in the actual derivation tree. A right-seeking functor (`Direction::Right`)
+    /// requires `arg_is_right == true`; a left-seeking functor requires false.
+    pub fn compatible_with(self, arg: ModalType, arg_is_right: bool) -> bool {
+        self.mode == arg.mode
+            && self.arity > 0
+            && match self.direction {
+                Direction::Right => arg_is_right,
+                Direction::Left  => !arg_is_right,
+            }
     }
 }
 
@@ -96,14 +118,36 @@ impl Quality {
 
 // ─── Situation / STO ─────────────────────────────────────────────────────────
 
-/// An STO situation: typed partial world. Carries the TRD assignment.
+/// An STO situation: typed partial world.
+///
+/// `active_nodes` is the set of ARG NodeIds anchored in this situation.
+/// An infon σ is supported by s only if all of σ's argument roles are filled
+/// by nodes in `active_nodes` and σ's polarity is positive (Barwise & Perry 1983).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Situation {
-    pub id:     u64,
-    pub label:  String,
-    pub trd:    Option<TRDId>,
+    pub id:           u64,
+    pub label:        String,
+    pub trd:          Option<TRDId>,
     /// Assumption bit assigned by the ATMS for this situation.
-    pub env_bit: u8,
+    pub env_bit:      u8,
+    /// NodeIds of ARG nodes anchored in this situation (fills argument roles).
+    pub active_nodes: HashSet<NodeId>,
+}
+
+impl Situation {
+    pub fn new(id: u64, label: impl Into<String>, env_bit: u8) -> Self {
+        Self {
+            id,
+            label:        label.into(),
+            trd:          None,
+            env_bit,
+            active_nodes: HashSet::new(),
+        }
+    }
+
+    pub fn anchor(&mut self, node_id: NodeId) {
+        self.active_nodes.insert(node_id);
+    }
 }
 
 // ─── Infon ────────────────────────────────────────────────────────────────────

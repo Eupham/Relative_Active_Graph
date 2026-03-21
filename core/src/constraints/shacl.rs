@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn valid_graph_no_violations() {
         let mut g: ArgGraph = StableGraph::new();
-        let functor_type = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, true);
+        let functor_type = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, crate::types::Direction::Right);
         let mut n = ArgNode::new(1, NodeType::Concept, functor_type, (0, 0));
         n.surface = Some(b"test".to_vec());
         g.add_node(n);
