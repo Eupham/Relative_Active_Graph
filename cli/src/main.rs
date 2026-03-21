@@ -168,8 +168,13 @@ fn main() -> Result<()> {
             }
             Ok(WireMessage::RegisterLexicon(entry)) => {
                 // Register a lexicon entry into the linearizer.
-                // (Engine would expose this in a fuller implementation.)
                 log::info!("Registered lexicon: {} → {} ({})", entry.predicate, entry.surface, entry.language);
+                engine.global_lexicon.insert(entry.predicate.clone(), csrre_core::generation::LexEntry {
+                    predicate: entry.predicate,
+                    language: entry.language,
+                    surface: entry.surface,
+                    modal_type: ModalType::default(),
+                });
             }
             Ok(WireMessage::Shutdown) => {
                 log::info!("Received shutdown.");

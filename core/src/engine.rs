@@ -74,6 +74,7 @@ pub struct Engine {
     pub ruler:         RulerBridge,
     pub rule_lifecycle: RuleLifecycleManager,
     pub counterfactual: CounterfactualReasoner,
+    pub global_lexicon: HashMap<String, crate::generation::LexEntry>, // for testing injection
     tr_counter:        u64,
 }
 
@@ -92,6 +93,7 @@ impl Engine {
             ruler:          RulerBridge::new(),
             rule_lifecycle: RuleLifecycleManager::new(),
             counterfactual: CounterfactualReasoner::new(0b1, 42),
+            global_lexicon: HashMap::new(),
             tr_counter:     0,
         }
     }
@@ -139,7 +141,12 @@ impl Engine {
         let dr = deepener.run(graph, &self.semantics, &self.perf, &mut self.thresholds, &query.text, &query.expected_type);
 
         // ── 8. Linearize best hypothesis ──────────────────────────────────────
-        let linearizer     = Linearizer::new(&query.target_language);
+        let mut linearizer = Linearizer::new(&query.target_language);
+        // Inject global lexicon maps for testing
+        for entry in self.global_lexicon.values() {
+            linearizer.lexicon.register(entry.clone());
+        }
+
         let surface_output = dr.hypotheses.first()
             .map(|h| linearizer.linearize(h))
             .unwrap_or_else(|| format!("[no hypothesis for '{}']", query.text));
