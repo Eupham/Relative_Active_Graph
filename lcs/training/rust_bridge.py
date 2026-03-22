@@ -108,7 +108,6 @@ class RustBridge:
         predicate:  str,
         language:   str,
         surface:    str,
-        role_order: list[str] | None = None,
     ) -> None:
         """Register a lexicon entry in the engine."""
         msg: dict = {
@@ -117,8 +116,6 @@ class RustBridge:
             "language":  language,
             "surface":   surface,
         }
-        if role_order:
-            msg["role_order"] = role_order
         self._send(msg)
 
     def execute_passage(

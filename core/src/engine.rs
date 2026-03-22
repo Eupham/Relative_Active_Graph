@@ -137,7 +137,6 @@ impl Engine {
             global_lexicon:  HashMap::new(),
             slot_tracker:    SlotOccupancyTracker::new(),
         };
-        engine.bootstrap_relational_lexicon();
         engine
     }
 
@@ -151,6 +150,10 @@ impl Engine {
         // ── 2. Compute TRD-relative thresholds ───────────────────────────────
         let theta_alpha = trd.map(|d| self.thresholds.theta_alpha(d)).unwrap_or(0.4);
         let theta_rho   = trd.map(|d| self.thresholds.theta_rho(d)).unwrap_or(0.38);
+
+        // Snapshot node/edge pools before step 3 consumes them (needed for decoding).
+        let node_pool_snapshot = node_pool.clone();
+        let edge_pool_snapshot = edge_pool.clone();
 
         // ── 3. ARG expansion ─────────────────────────────────────────────────
         let mut search = ArgSearch::new(active_env, theta_alpha, theta_rho);
@@ -183,15 +186,24 @@ impl Engine {
         let deepener = ProgressiveDeepener::new(trd);
         let dr = deepener.run(graph, &self.semantics, &self.perf, &mut self.thresholds, &query.text, &query.expected_type);
 
-        // ── 8. Linearize best hypothesis ──────────────────────────────────────
-        let mut linearizer = Linearizer::new(&query.target_language);
-        for entry in self.global_lexicon.values() {
-            linearizer.lexicon.register(entry.clone());
-        }
+        // ── 8. Generate surface output ────────────────────────────────────────
+        let decode_trd = trd.unwrap_or(0);
+        let decoded_ids = self.decode(&node_pool_snapshot, &edge_pool_snapshot, decode_trd, 32);
 
-        let surface_output = dr.hypotheses.first()
-            .map(|h| linearizer.autoregressive_linearize(&h.proposition, graph, active_env))
-            .unwrap_or_else(|| format!("[no hypothesis for '{}']", query.text));
+        let surface_output = if decoded_ids.is_empty() {
+            // No confident prediction. Return the raw hypothesis root as a last resort.
+            dr.hypotheses.first()
+                .map(|h| {
+                    let mut lin = Linearizer::new(&query.target_language);
+                    for entry in self.global_lexicon.values() {
+                        lin.lexicon.register(entry.clone());
+                    }
+                    lin.proposition_to_surface(&h.proposition)
+                })
+                .unwrap_or_else(|| format!("[no output for '{}']", query.text))
+        } else {
+            self.surface_from_decoded(&decoded_ids, &node_pool_snapshot, &query.target_language)
+        };
 
         // ── 9. Quality assessment (heuristic: satisfied + depth bonus) ────────
         let quality = if dr.satisfied {
@@ -450,6 +462,126 @@ impl Engine {
         }
     }
 
+    /// Decode a sequence of tokens from the current ARG context.
+    ///
+    /// Uses the same `PassageContext` → `VocabDistribution` → commit loop as
+    /// `execute_passage`, but selects (argmax) instead of attributing.
+    ///
+    /// `seed_nodes` and `seed_edges` seed the context before any decoding begins.
+    ///
+    /// `max_tokens` is an upper bound. Decoding stops earlier if:
+    /// - The top-scoring node probability drops below `1.0 / vocab_size`
+    ///   (the model is no longer confident about any continuation), OR
+    /// - The last two selected nodes are identical (repetition = done).
+    ///
+    /// Returns the sequence of selected NodeIds in emission order.
+    pub fn decode(
+        &mut self,
+        seed_nodes: &[ArgNode],
+        seed_edges: &[ArgEdge],
+        trd:        TRDId,
+        max_tokens: usize,
+    ) -> Vec<NodeId> {
+        let active_env  = self.context_stack.current_env();
+        let theta_alpha = self.thresholds.theta_alpha(trd);
+        let theta_rho   = self.thresholds.theta_rho(trd);
+
+        let mut passage = PassageContext::new(trd);
+
+        // Absorb seed context (same as the initial ARG for this query).
+        passage.absorb_sentence(seed_nodes, seed_edges);
+
+        let mut output: Vec<NodeId> = Vec::new();
+        let mut prev: Option<NodeId> = None;
+
+        for _ in 0..max_tokens {
+            // Candidate pool is empty past the seed — the model generates
+            // from the context it has accumulated.
+            let result = passage.decode_step(
+                &[],
+                &[],
+                active_env,
+                theta_alpha,
+                theta_rho,
+                prev,
+            );
+
+            let (node_id, prob) = match result {
+                Some(r) => r,
+                None    => break,  // empty distribution = stop
+            };
+
+            // Stopping conditions.
+            let vocab_size = passage.node_map.len().max(1);
+            let floor = 1.0 / vocab_size as f32;
+            if prob < floor { break; }
+            if output.last() == Some(&node_id) { break; }  // repetition
+
+            output.push(node_id);
+            prev = Some(node_id);
+        }
+
+        output
+    }
+
+    /// Resolve a sequence of NodeIds to a surface string.
+    ///
+    /// Reads each node's surface bytes directly from the ARG graph.
+    /// Falls back to the node's lexicon entry if surface bytes are absent
+    /// (handles abstract nodes that were never seen in training text).
+    /// Never consults role_order or frame templates.
+    ///
+    /// `seed_nodes` is the node pool that was used to seed the decode context.
+    /// Nodes are looked up here first (they carry the surface bytes from training).
+    pub fn surface_from_decoded(
+        &self,
+        node_ids:   &[NodeId],
+        seed_nodes: &[ArgNode],
+        language:   &str,
+    ) -> String {
+        let mut linearizer = Linearizer::new(language);
+        for entry in self.global_lexicon.values() {
+            linearizer.lexicon.register(entry.clone());
+        }
+
+        node_ids.iter()
+            .filter_map(|&nid| {
+                // Primary: check seed nodes (they carry surface bytes from the query).
+                if let Some(node) = seed_nodes.iter().find(|n| n.id == nid) {
+                    if let Some(s) = node.surface_str() {
+                        if !s.is_empty() {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+                // Check node_pool_cache (from training).
+                if let Some(node) = self.node_pool_cache.iter().find(|n| n.id == nid) {
+                    if let Some(s) = node.surface_str() {
+                        if !s.is_empty() {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+                // Check last_graph if available.
+                if let Some(ref graph) = self.last_graph {
+                    let node_idx = graph.node_indices().find(|&i| graph[i].id == nid);
+                    if let Some(idx) = node_idx {
+                        let node = &graph[idx];
+                        if let Some(s) = node.surface_str() {
+                            if !s.is_empty() {
+                                return Some(s.to_string());
+                            }
+                        }
+                    }
+                }
+                // Fallback: lexicon lookup by NodeId → predicate string (for abstract nodes).
+                linearizer.lexicon.surface_for_node_id(nid, language)
+                    .map(|s| s.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// Answer "another word for X" by traversing synonym edges.
     ///
     /// Given a surface form, finds the node whose surface matches, then returns
@@ -487,81 +619,6 @@ impl Engine {
         candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(n);
         candidates
-    }
-
-    /// Convert synonym query results for `surface` into a Hypothesis ready for
-    /// standard linearization via Linearizer::autoregressive_linearize.
-    ///
-    /// The predicate `"synonym_of"` must be registered in global_lexicon for the
-    /// target language with appropriate role_order (see bootstrap_relational_lexicon).
-    /// If no synonym is found, returns None.
-    pub fn synonym_query_as_hypothesis(
-        &self,
-        surface:  &str,
-        language: &str,
-        n:        usize,
-    ) -> Option<Hypothesis> {
-        let results = self.synonym_query(surface, n);
-        let (synonym, score) = results.into_iter().next()?;
-
-        let prop = PropositionGraph {
-            root:       "synonym_of".into(),
-            roles:      vec![
-                ("ARG0".into(), surface.to_string()),
-                ("ARG1".into(), synonym),
-            ],
-            lambda_str: format!("synonym_of({}, {})", surface, surface),
-        };
-
-        Some(Hypothesis {
-            id:          0,
-            lambda_str:  prop.lambda_str.clone(),
-            proposition: prop,
-            relevance:   score,
-            root_node:   0,
-        })
-    }
-
-    /// Register built-in relational predicates across all supported languages.
-    ///
-    /// This must be called once after Engine::new() and before any synonym queries
-    /// are issued. It seeds global_lexicon with the surface forms and role_order
-    /// frames for predicates that are not induced from mC4 (because they express
-    /// meta-relations, not object-level predicates).
-    ///
-    /// The role_order field encodes the surface slot sequence:
-    ///   "ROOT"  → the predicate's own surface form
-    ///   "ARG0"  → the subject/topic argument
-    ///   "ARG1"  → the result/target argument
-    pub fn bootstrap_relational_lexicon(&mut self) {
-        let entries: &[(&str, &str, &str, &[&str])] = &[
-            // (predicate, language, surface, role_order)
-            ("synonym_of", "en", "another word for", &["ARG0", "ROOT", "ARG1"]),
-            ("synonym_of", "de", "ein anderes Wort für", &["ARG0", "ROOT", "ARG1"]),
-            ("synonym_of", "fr", "un autre mot pour", &["ARG0", "ROOT", "ARG1"]),
-            ("synonym_of", "es", "otra palabra para", &["ARG0", "ROOT", "ARG1"]),
-            ("synonym_of", "zh", "的同义词是", &["ARG0", "ROOT", "ARG1"]),
-            ("synonym_of", "ja", "の同義語は", &["ARG0", "ROOT", "ARG1"]),
-            ("no_synonym", "en", "no synonym found for", &["ROOT", "ARG0"]),
-            ("no_synonym", "de", "kein Synonym gefunden für", &["ROOT", "ARG0"]),
-            ("no_synonym", "fr", "aucun synonyme trouvé pour", &["ROOT", "ARG0"]),
-            ("no_synonym", "es", "ningún sinónimo encontrado para", &["ROOT", "ARG0"]),
-            ("no_synonym", "zh", "未找到同义词", &["ROOT", "ARG0"]),
-            ("no_synonym", "ja", "同義語が見つかりません", &["ROOT", "ARG0"]),
-        ];
-
-        for (predicate, language, surface, role_order) in entries {
-            let entry = LexEntry {
-                predicate:  (*predicate).into(),
-                language:   (*language).into(),
-                surface:    (*surface).into(),
-                modal_type: ModalType::default(),
-                role_order: role_order.iter().map(|s| s.to_string()).collect(),
-            };
-            // Per-language key so multiple languages don't overwrite each other.
-            let key = format!("{}:{}", language, predicate);
-            self.global_lexicon.insert(key, entry);
-        }
     }
 
     /// Apply a batch of edge attribution updates for the given quality signal.
