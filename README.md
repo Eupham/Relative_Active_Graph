@@ -12,9 +12,9 @@ causal SCMs, and variance-adaptive activation thresholds (VDBE).
 ## C4 Training — Colab Notebook
 
 Train the MTLG lexicon and TRD bootstrapper on a streaming subset of the
-[C4 corpus](https://huggingface.co/datasets/allenai/c4) (HuggingFace), then
-run inference on new sentences and launch the interactive Streamlit UI —
-no GPU required, ~5 min on a free Colab CPU.
+[C4 corpus](https://huggingface.co/datasets/allenai/c4) (HuggingFace), run the
+integration test suite, then launch the interactive **Streamlit UI** via a public
+ngrok URL — no GPU required, ~5 min on a free Colab CPU.
 
 The notebook **clones this repository directly** so it always runs against the
 current codebase — no inline source copies.
@@ -25,20 +25,17 @@ current codebase — no inline source copies.
 
 | Step | Description |
 |------|-------------|
-| 1 | Install dependencies (`datasets`, `stanza`, `numpy`, `scipy`, `networkx`, `streamlit`, …) |
-| 2 | **Clone repo from GitHub** — source modules loaded from the live codebase |
-| 3 | Configure demo parameters (`TRAIN_SAMPLES`, `HELD_OUT`, `N_TRD_CLUSTERS`) |
-| 4 | Download Stanza UD model for the target language |
-| 5 | **Stream C4** via HuggingFace streaming API (no full download) |
-| 6 | Parse sentences → Universal Dependencies → MTLG modal graphs (◇ / □ / ◊) |
-| 7 | **Induce MTLG lexicon** — MLE over `(lemma, mode, ucca_cat, arity)` |
-| 8 | **Bootstrap TRD clusters** — k-means over modal type profile vectors |
-| 9 | Evaluate parse accuracy + TRD coverage on held-out sentences |
+| 1 | **Clone repo from GitHub** — source modules loaded from the live codebase |
+| 2 | Install dependencies (`datasets`, `stanza`, `numpy`, `scipy`, `networkx`, `streamlit`, `pyngrok`, …) |
+| 3 | Add repo modules to path; download Stanza UD model |
+| 4 | Configure demo parameters (`TRAIN_SAMPLES`, `HELD_OUT`, `N_TRD_CLUSTERS`) |
+| 5–8 | **Stream C4** → parse UD → MTLG graphs → induce lexicon → bootstrap TRDs → evaluate held-out |
+| 9 | **Integration test suite** — 5 canonical sentences verified end-to-end (parse, lexicon, TRD) |
 | 10 | Visualise modal mode and UCCA category distributions |
 | 11 | **Inference demo** — analyse new sentences with the trained model |
-| 12 | Render MTLG dependency graphs with NetworkX (UCCA-coloured, mode-styled) |
+| 12 | Render MTLG dependency graphs (UCCA-coloured, mode-styled edges) |
 | 13 | Download trained artefacts (`en_lexicon.json`, `en_trds.json`) |
-| 14 | **Launch Streamlit UI** — interactive training & inference via public ngrok URL |
+| 14 | **Launch Streamlit UI** — interactive Train & Inference tabs via public ngrok URL |
 
 ---
 
@@ -52,8 +49,26 @@ streamlit run app.py
 ```
 
 The UI provides two tabs:
-- **Train** — stream C4, induce lexicon, bootstrap TRDs with live progress
-- **Inference & Visualization** — analyse sentences and render MTLG graphs
+- **Train** — stream C4, induce lexicon, bootstrap TRDs with live progress bars
+- **Inference & Visualization** — analyse sentences and render MTLG dependency graphs
+
+---
+
+## Integration Tests
+
+Quick pipeline check (pure Python, no Rust required):
+
+```bash
+cd lcs/induction
+python test_pipeline.py
+```
+
+Full end-to-end test (requires Rust build):
+
+```bash
+cargo build --release
+python test_e2e_english.py
+```
 
 ---
 
@@ -61,9 +76,9 @@ The UI provides two tabs:
 
 ```
 Relative_Active_Graph/
-├── RAG_C4_Training.ipynb          # Colab training + inference notebook (clones repo)
-├── app.py                         # Streamlit web UI (train + inference)
-├── test_e2e_english.py            # End-to-end English pipeline test
+├── RAG_C4_Training.ipynb          # Colab notebook — clones repo, trains, tests, launches UI
+├── app.py                         # Streamlit web UI (Train + Inference & Visualization)
+├── test_e2e_english.py            # End-to-end English pipeline test (Rust + Python)
 ├── test_summary.md                # Test execution results
 ├── core/                          # Rust reasoning engine (CSRRE)
 │   └── src/
@@ -110,15 +125,4 @@ cargo build --release
 pip install -r lcs/requirements.txt
 python lcs/induction/mtlg_inducer.py en    # induce English lexicon from C4
 python lcs/induction/trd_bootstrap.py en   # bootstrap TRDs
-```
-
-## End-to-End Tests
-
-```bash
-# Python pipeline integration test
-python lcs/induction/test_pipeline.py
-
-# Full English end-to-end (requires Rust binary)
-cargo build --release
-python test_e2e_english.py
 ```
