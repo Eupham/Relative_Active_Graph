@@ -103,14 +103,23 @@ class RustBridge:
         })
         return self._recv()
 
-    def register_lexicon(self, predicate: str, language: str, surface: str) -> None:
+    def register_lexicon(
+        self,
+        predicate:  str,
+        language:   str,
+        surface:    str,
+        role_order: list[str] | None = None,
+    ) -> None:
         """Register a lexicon entry in the engine."""
-        self._send({
-            "type": "register_lexicon",
+        msg: dict = {
+            "type":      "register_lexicon",
             "predicate": predicate,
-            "language": language,
-            "surface": surface,
-        })
+            "language":  language,
+            "surface":   surface,
+        }
+        if role_order:
+            msg["role_order"] = role_order
+        self._send(msg)
 
     def execute_passage(
         self,

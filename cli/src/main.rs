@@ -66,9 +66,10 @@ struct WireEdge {
 
 #[derive(Deserialize)]
 struct WireLexEntry {
-    predicate: String,
-    language:  String,
-    surface:   String,
+    predicate:  String,
+    language:   String,
+    surface:    String,
+    role_order: Option<Vec<String>>,  // new optional field; None = []
 }
 
 #[derive(Serialize)]
@@ -153,11 +154,13 @@ fn main() -> Result<()> {
             }
             Ok(WireMessage::RegisterLexicon(entry)) => {
                 log::info!("Registered lexicon: {} → {} ({})", entry.predicate, entry.surface, entry.language);
-                engine.global_lexicon.insert(entry.predicate.clone(), csrre_core::generation::LexEntry {
-                    predicate: entry.predicate,
-                    language: entry.language,
-                    surface: entry.surface,
+                let key = format!("{}:{}", entry.language, entry.predicate);
+                engine.global_lexicon.insert(key, csrre_core::generation::LexEntry {
+                    predicate:  entry.predicate,
+                    language:   entry.language,
+                    surface:    entry.surface,
                     modal_type: ModalType::default(),
+                    role_order: entry.role_order.unwrap_or_default(),
                 });
             }
             Ok(WireMessage::Shutdown) => {
