@@ -127,6 +127,58 @@ impl PassageContext {
         self.sentence_count += 1;
     }
 
+    /// Perform one inference step: predict the next token from current context,
+    /// then commit the prediction to the accumulated graph.
+    ///
+    /// Returns:
+    /// - The predicted NodeId (argmax of VocabDistribution).
+    /// - The probability of that prediction (for stopping condition).
+    ///
+    /// Mirrors `step()` exactly: build graph from current context, score it,
+    /// select best node, commit it, create sequential edge from prev.
+    /// No attribution is applied.
+    pub fn decode_step(
+        &mut self,
+        node_pool:    &[ArgNode],
+        edge_pool:    &[ArgEdge],
+        active_env:   Env,
+        theta_alpha:  f64,
+        theta_rho:    f64,
+        prev_node_id: Option<NodeId>,
+    ) -> Option<(NodeId, f32)> {
+        use crate::generation::VocabDistribution;
+
+        // Snapshot context before committing candidates.
+        let search = self.build_graph(active_env, theta_alpha, theta_rho);
+        let dist = VocabDistribution::from_graph(&search.graph, active_env);
+
+        // Select highest-probability node.
+        let (predicted_id, predicted_prob) = dist.probs.iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .copied()?;
+
+        // Commit the candidate pool so future steps see these nodes.
+        for n in node_pool {
+            self.node_map.entry(n.id).or_insert_with(|| n.clone());
+        }
+        for e in edge_pool {
+            self.edge_map.entry(e.id).or_insert_with(|| e.clone());
+        }
+
+        // Sequential edge: same logic as training.
+        if let Some(prev) = prev_node_id {
+            let seq_id = sequential_edge_id(prev, predicted_id);
+            let seq_edge = ArgEdge::new(
+                seq_id, prev, predicted_id,
+                EdgeClass::SEQUENTIAL, ModalMode::Diamond,
+            );
+            self.edge_map.entry(seq_id).or_insert(seq_edge);
+        }
+
+        self.sentence_count += 1;
+        Some((predicted_id, predicted_prob))
+    }
+
     /// Build the merged ARG from all absorbed nodes/edges.
     pub fn build_graph(&self, active_env: Env, theta_alpha: f64, theta_rho: f64) -> ArgSearch {
         let mut search = ArgSearch::new(active_env, theta_alpha, theta_rho);

@@ -69,7 +69,6 @@ struct WireLexEntry {
     predicate:  String,
     language:   String,
     surface:    String,
-    role_order: Option<Vec<String>>,  // new optional field; None = []
 }
 
 #[derive(Serialize)]
@@ -160,7 +159,6 @@ fn main() -> Result<()> {
                     language:   entry.language,
                     surface:    entry.surface,
                     modal_type: ModalType::default(),
-                    role_order: entry.role_order.unwrap_or_default(),
                 });
             }
             Ok(WireMessage::Shutdown) => {
