@@ -172,6 +172,36 @@ class TrdBootstrapper:
                 matched += 1
         return matched / len(held_out)
 
+    def online_centroid_update(
+        self,
+        passage_vector: list[float],
+        quality: float,
+        trd_id: int,
+        lr: float = 0.01,
+    ) -> None:
+        """
+        Shift the centroid of `trd_id` toward `passage_vector` weighted by `quality`.
+
+        Called after each passage flush. High-quality passages (low CE loss) move the
+        centroid more than low-quality ones. This allows TRDs to drift as the engine
+        encounters new domains in C4, preventing the initial bootstrap from becoming stale.
+
+        `passage_vector`: modal-profile vector for the passage (same dimensionality as
+                          the bootstrap vocab vectors).
+        `quality`:        mean CE quality over the passage (in [0, 1]).
+        `trd_id`:         which TRD centroid to update.
+        `lr`:             learning rate (default 0.01).
+        """
+        if self._model is None or self._model.centroids is None:
+            return
+        for trd in self.trds:
+            if trd.trd_id == trd_id:
+                c = self._model.centroids[trd_id]
+                pv = passage_vector
+                for i in range(min(len(c), len(pv))):
+                    c[i] += lr * quality * (pv[i] - c[i])
+                break
+
     def save(self, path: Path):
         data = {
             "vocab": self.vocab,

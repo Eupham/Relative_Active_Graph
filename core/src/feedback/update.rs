@@ -11,6 +11,8 @@ use crate::feedback::attribution::EdgeAttribution;
 pub const ETA: f32 = 0.05;
 
 /// Apply a single attribution delta to the graph's edge weight.
+/// `quality.0` may be negative (wrong-prediction penalty), producing a
+/// negative update that decreases the edge weight.
 pub fn apply_attribution(
     graph:   &mut ArgGraph,
     edge_id: EdgeId,
@@ -20,7 +22,7 @@ pub fn apply_attribution(
     let Some(ei) = graph.edge_indices().find(|&i| graph[i].id == edge_id) else {
         return false;
     };
-    let update = ETA * (delta as f32) * quality.as_f32();
+    let update = ETA * (delta as f32) * quality.0;
     graph[ei].apply_delta(update);
     true
 }

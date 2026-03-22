@@ -20,6 +20,10 @@ pub enum Granularity {
     Sentence,
     /// Discourse-level: DRS update (variable binding across TRs).
     Discourse,
+    /// Passage-level: spans multiple sentences; attribution deferred until passage end.
+    /// The context frame stays open across sentence boundaries and only dissolves
+    /// (with backward attribution propagation) when the full passage is complete.
+    Passage,
 }
 
 /// The semantic content of a TR.

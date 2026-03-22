@@ -112,23 +112,47 @@ class RustBridge:
             "surface": surface,
         })
 
+    def execute_passage(
+        self,
+        trd: int,
+        language: str,
+        sentences: list[dict],
+    ) -> dict:
+        """
+        Submit a full passage as a teacher-forcing training unit.
+
+        `sentences`: list of dicts, each with:
+          - "nodes":  list of WireNode dicts
+          - "edges":  list of WireEdge dicts
+          - "steps":  list of expected_node_id ints (one per token)
+        """
+        self._send({
+            "type":      "execute_passage",
+            "trd":       trd,
+            "language":  language,
+            "sentences": sentences,
+        })
+        return self._recv()
+
     def make_node(
         self,
         node_id: int,
         surface: str,
         score: float = 0.5,
-        cat: int = 0,
+        deprel_hash: int = 0,
+        upos_hash: int = 0,
         arity: int = 0,
         mode: str = "diamond",
     ) -> dict:
-        """Build a WireNode dict."""
+        """Build a WireNode dict. No hard category label is included."""
         return {
-            "id": node_id,
-            "surface": surface,
-            "score": score,
-            "cat": cat,
-            "arity": arity,
-            "mode": mode,
+            "id":          node_id,
+            "surface":     surface,
+            "score":       score,
+            "deprel_hash": deprel_hash,
+            "upos_hash":   upos_hash,
+            "arity":       arity,
+            "mode":        mode,
         }
 
     def make_edge(
