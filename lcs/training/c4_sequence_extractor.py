@@ -6,6 +6,7 @@ suitable for the sequential trainer. Integrates with the existing mc4_stream.py.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
@@ -109,9 +110,20 @@ class TokenSequence:
 @dataclass
 class TokenSequenceStep:
     text:             str
-    expected_edge_id: int
+    lemma:            str
+    expected_node_id: int   # stable hash of lemma (replaces expected_edge_id)
     node_id:          int
-    category_id:      int   # TypeCategory(u32)
+    deprel_hash:      int   # hash of raw deprel string — no category assignment
+    upos_hash:        int   # hash of UPOS tag — no hard mapping
+
+
+def _stable_node_id(lemma: str) -> int:
+    """Stable 48-bit hash of lemma used as NodeId in the ARG."""
+    return int(hashlib.sha256(lemma.encode()).hexdigest(), 16) & 0xFFFFFFFFFFFF
+
+
+def _hash_str(s: str) -> int:
+    return int(hashlib.sha256(s.encode()).hexdigest(), 16) & 0xFFFF
 
 
 def extract_sequence(
@@ -122,53 +134,27 @@ def extract_sequence(
     """
     Convert a UD tree into a `TokenSequence` for teacher forcing.
 
-    Each token becomes one step; the expected_edge_id is `base_edge_id + token_index`.
+    Each token becomes one step. The expected_node_id is a stable hash of the
+    token's lemma. No hard category labels are assigned — structural hashes
+    (deprel_hash, upos_hash) are provided for post-hoc clustering by the
+    CategoryInducer in the Rust engine.
     """
     steps = []
-    for i, tok in enumerate(getattr(tree, "tokens", [])):
+    for tok in getattr(tree, "tokens", []):
+        lemma = getattr(tok, "lemma", tok.text.lower())
         steps.append(TokenSequenceStep(
             text=tok.text,
-            expected_edge_id=base_edge_id + i,
+            lemma=lemma,
+            expected_node_id=_stable_node_id(lemma),
             node_id=tok.id,
-            category_id=_structural_category(tok, tree),
+            deprel_hash=_hash_str(getattr(tok, "deprel", "dep")),
+            upos_hash=_hash_str(getattr(tok, "upos", "X")),
         ))
     return TokenSequence(
         sentence=getattr(tree, "text", ""),
         trd_id=trd_id,
         steps=steps,
     )
-
-
-def _structural_category(tok: Any, tree: Any) -> int:
-    """Assign structural category ID from deprel (mirrors Rust score_ucca logic)."""
-    deprel = getattr(tok, "deprel", "").lower()
-    head   = getattr(tok, "head", 0)
-
-    # Root or governs arguments → Process (1)
-    if head == 0:
-        return 1
-    if deprel in ("nsubj", "obj", "iobj", "csubj", "xcomp", "ccomp"):
-        # Governs (check if tok has dependents that are core args):
-        children = [t for t in getattr(tree, "tokens", []) if getattr(t, "head", -1) == tok.id]
-        if any(getattr(c, "deprel", "").lower() in ("nsubj", "obj") for c in children):
-            return 1  # Process
-        if not children:
-            return 6  # Participant (leaf core arg)
-        return 1
-    # Connector
-    if deprel in ("cc", "conj"):
-        return 2
-    # Ground / discourse
-    if deprel in ("discourse", "vocative", "reparandum"):
-        return 3
-    # Adverbial
-    if deprel in ("advmod", "obl", "obl:tmod", "obl:npmod"):
-        return 4
-    # State / stative
-    if deprel in ("amod", "acl", "acl:relcl"):
-        return 5
-    # Default
-    return 0
 
 
 def stream_c4_sequences(
@@ -191,7 +177,6 @@ def stream_c4_sequences(
         return
 
     count = 0
-    base_eid = 1
     for item in stream_mc4(language=language):
         if count >= max_sentences:
             break
@@ -206,8 +191,7 @@ def stream_c4_sequences(
             if trd_assignments:
                 key = sentence_text[:32]
                 trd_id = trd_assignments.get(key, 0)
-            seq = extract_sequence(tree, trd_id=trd_id, base_edge_id=base_eid)
-            base_eid += len(seq.steps)
+            seq = extract_sequence(tree, trd_id=trd_id)
             yield seq
             count += 1
 

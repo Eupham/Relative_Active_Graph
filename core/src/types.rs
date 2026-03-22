@@ -92,7 +92,8 @@ impl Default for ModalType {
 
 // ─── Continuous quality signal ────────────────────────────────────────────────
 
-/// Quality signal in [0.0, 1.0] from TR dissolution or CE training comparison.
+/// Quality signal in [-1.0, 1.0] from TR dissolution or CE training comparison.
+/// Positive values pull edges toward activation; negative values push away.
 /// Continuous to support per-position quality from long-output training.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Quality(pub f32);
@@ -102,20 +103,33 @@ impl Quality {
     pub const PARTIAL: Quality = Quality(0.5);
     pub const BAD:     Quality = Quality(0.0);
 
-    pub fn new(v: f32) -> Self { Quality(v.clamp(0.0, 1.0)) }
+    /// Construct a quality signal clamped to [-1.0, 1.0].
+    /// Negative values represent wrong-prediction penalties.
+    pub fn new(v: f32) -> Self { Quality(v.clamp(-1.0, 1.0)) }
     pub fn as_f32(self) -> f32  { self.0 }
     pub fn as_f64(self) -> f64  { self.0 as f64 }
 
-    /// Cross-entropy quality signal.
-    /// `p_predicted`: softmax probability of the token that was generated.
-    /// `was_correct`: whether that token matched ground truth.
+    /// CE quality signal for a prediction.
+    /// Correct prediction:  signal = (1 - P(correct))   — large update when model uncertain.
+    /// Wrong prediction:    signal = -P(wrong)           — negative update proportional to
+    ///                                                     confidence in the wrong answer.
+    /// The caller applies this to:
+    ///   - expected edge: always positive (pull toward correct)
+    ///   - predicted edge (if wrong): negative (push away from wrong)
     pub fn from_ce(p_predicted: f32, was_correct: bool) -> Self {
         if was_correct {
-            Quality::new(1.0 - p_predicted)  // CE gradient ∂L/∂z_correct = p - 1 (inverted)
+            Quality::new(1.0 - p_predicted)
         } else {
-            Quality::BAD
+            // Negative: the predicted-wrong edge should be weakened.
+            Quality::new(-(p_predicted.min(1.0 - 1e-12)))
         }
     }
+
+    /// True if this quality signal is a negative update (wrong-prediction penalty).
+    pub fn is_negative(self) -> bool { self.0 < 0.0 }
+
+    /// Absolute magnitude of the signal.
+    pub fn magnitude(self) -> f32 { self.0.abs() }
 
     /// Token overlap for long-output position quality.
     pub fn token_overlap(generated: &str, expected: &str) -> Quality {

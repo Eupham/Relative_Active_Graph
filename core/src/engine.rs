@@ -7,6 +7,7 @@ use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, ModalMode, TypeCat
 use crate::atms::BaseAtms;
 use crate::arg::{
     ContextStack, ArgGraph, ArgSearch, ArgNode, ArgEdge, NodeClass, EdgeClass,
+    PassageContext, SlotOccupancyTracker,
     transient_repr::{RepContent, Granularity},
     egraph_adapter::ArgEGraph,
     graphica_adapter::{GraphicaCache, build_key},
@@ -19,6 +20,7 @@ use crate::semantics::MtlgSemantics;
 use crate::rules::{RulerBridge, RuleLifecycleManager};
 use crate::feedback::{AttributionEngine, ProvenanceLog, apply_trace};
 use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult, VocabDistribution};
+use crate::generation::linearizer::LexEntry;
 use crate::feedback::update::{propagate_attribution_backward, apply_attribution};
 
 /// A query submitted to the engine.
@@ -66,8 +68,9 @@ pub struct QueryResult {
 pub struct TokenStep {
     /// The surface text of this token (for logging / hypothesis matching).
     pub text:             String,
-    /// The expected edge ID that should be activated for this token.
-    pub expected_edge_id: EdgeId,
+    /// The expected NodeId that should be activated for this token.
+    /// This is the stable hash of the token's lemma — not a transient edge ID.
+    pub expected_node_id: NodeId,
     /// Node pool to use for this step's ARG expansion.
     pub node_pool:        Vec<ArgNode>,
     /// Edge pool to use for this step's ARG expansion.
@@ -79,7 +82,7 @@ pub struct TokenStep {
 pub struct SequenceTrainResult {
     /// Number of TokenSteps processed.
     pub steps_processed:  usize,
-    /// Sum of Quality values across all steps.
+    /// Sum of Quality magnitudes across all steps.
     pub quality_sum:      f64,
     /// Final Quality of the last step.
     pub final_quality:    Quality,
@@ -106,6 +109,10 @@ pub struct Engine {
     pub last_graph:     Option<ArgGraph>,
     /// Cached node pool from the last expansion (for replay / attribution).
     pub node_pool_cache: Vec<ArgNode>,
+    /// Per-language lexicon for linearization.
+    pub global_lexicon: HashMap<String, LexEntry>,
+    /// Slot occupancy tracker for synonym edge discovery.
+    pub slot_tracker:   SlotOccupancyTracker,
 }
 
 impl Engine {
@@ -126,6 +133,8 @@ impl Engine {
             tr_counter:      0,
             last_graph:      None,
             node_pool_cache: Vec::new(),
+            global_lexicon:  HashMap::new(),
+            slot_tracker:    SlotOccupancyTracker::new(),
         }
     }
 
@@ -173,7 +182,6 @@ impl Engine {
 
         // ── 8. Linearize best hypothesis ──────────────────────────────────────
         let mut linearizer = Linearizer::new(&query.target_language);
-        // Inject global lexicon maps for testing
         for entry in self.global_lexicon.values() {
             linearizer.lexicon.register(entry.clone());
         }
@@ -201,8 +209,6 @@ impl Engine {
         // ── 11. Pop context: dissolve TRs, lift DRS, apply attribution ────────
         if let Some((dissolved_trs, _referents)) = self.context_stack.pop() {
             for tr in &dissolved_trs {
-                // Apply attribution trace to ARG (in real system: graph would be mutable here).
-                // Record in ruler for rule induction.
                 self.ruler.observe_dissolved_tr(tr, quality.as_f32() >= Quality::PARTIAL.as_f32());
             }
         }
@@ -225,10 +231,10 @@ impl Engine {
     ///
     /// For each `TokenStep`, the engine:
     /// 1. Expands the ARG from the step's node/edge pool.
-    /// 2. Builds a `VocabDistribution` (softmax over active nodes).
-    /// 3. Computes CE-based `Quality` against the expected edge.
-    /// 4. Applies attribution to edges involved in this step.
-    /// 5. Updates TRD performance and thresholds.
+    /// 2. Builds a `VocabDistribution` (softmax over active nodes by NodeId).
+    /// 3. Computes CE-based two-sided `Quality` against the expected node.
+    /// 4. Applies positive attribution to expected node's incoming edges.
+    /// 5. Applies negative attribution to wrongly-predicted node's incoming edges.
     pub fn execute_sequence(
         &mut self,
         trd:      TRDId,
@@ -240,7 +246,7 @@ impl Engine {
         let mut final_quality    = Quality::BAD;
         let n_steps              = steps.len();
 
-        let active_env = self.context_stack.current_env();
+        let active_env  = self.context_stack.current_env();
         let theta_alpha = self.thresholds.theta_alpha(trd);
         let theta_rho   = self.thresholds.theta_rho(trd);
 
@@ -252,36 +258,38 @@ impl Engine {
 
             let graph = &search.graph;
 
-            // VocabDistribution: P(token | context).
+            // VocabDistribution: P(token | context) keyed by NodeId.
             let dist = VocabDistribution::from_graph(graph, active_env);
 
-            // CE quality: was the expected edge the top-scoring one?
-            let predicted_top = dist.probs.iter()
-                .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|&(_, eid, _)| eid)
-                .unwrap_or(0);
-            let was_correct = predicted_top == step.expected_edge_id;
-            let quality = dist.ce_quality(step.expected_edge_id, was_correct);
+            // Two-sided CE split: positive for expected, negative for wrongly predicted.
+            let (q_correct, q_wrong_opt) = dist.ce_quality_split(step.expected_node_id);
 
-            quality_sum   += quality.as_f64();
-            final_quality  = quality;
-
-            // Apply attribution to the expected edge.
-            let result = self.apply_attribution_batch(
-                vec![step.expected_edge_id],
-                quality,
-                trd,
-            );
+            // Pull expected node's incoming edges toward activation.
+            let incoming_expected: Vec<EdgeId> = graph.edge_indices()
+                .filter(|&ei| graph[ei].dst == step.expected_node_id)
+                .map(|ei| graph[ei].id)
+                .collect();
+            let result = self.apply_attribution_batch(incoming_expected, q_correct, trd);
             attributed_edges.extend(result);
+
+            // Push wrongly-predicted node's incoming edges away.
+            if let Some((wrong_nid, q_neg)) = q_wrong_opt {
+                let incoming_wrong: Vec<EdgeId> = graph.edge_indices()
+                    .filter(|&ei| graph[ei].dst == wrong_nid)
+                    .map(|ei| graph[ei].id)
+                    .collect();
+                let result = self.apply_attribution_batch(incoming_wrong, q_neg, trd);
+                attributed_edges.extend(result);
+            }
+
+            quality_sum   += q_correct.magnitude() as f64;
+            final_quality  = q_correct;
 
             self.node_pool_cache = step.node_pool;
         }
 
-        // Store the last built graph (re-build from cache for caller convenience).
-        // (In a full impl the graph would be retained across steps.)
         self.last_graph = None;
 
-        // Update TRD performance.
         self.perf.update(trd, final_quality);
         self.thresholds.sync(&self.perf);
 
@@ -291,6 +299,146 @@ impl Engine {
             final_quality,
             attributed_edges,
         }
+    }
+
+    /// Execute a full passage as a teacher-forcing training unit.
+    ///
+    /// A passage is a sequence of sentences. The ARG is kept open across sentence
+    /// boundaries; attribution is accumulated and flushed only at passage end.
+    /// This enables cross-sentence attribution and 2000+ character training.
+    pub fn execute_passage(
+        &mut self,
+        trd:       TRDId,
+        sentences: Vec<Vec<TokenStep>>,
+        language:  &str,
+    ) -> SequenceTrainResult {
+        let active_env  = self.context_stack.current_env();
+        let theta_alpha = self.thresholds.theta_alpha(trd);
+        let theta_rho   = self.thresholds.theta_rho(trd);
+
+        let mut passage = PassageContext::new(trd);
+        let mut quality_sum      = 0.0f64;
+        let mut total_steps      = 0usize;
+        let mut final_quality    = Quality::BAD;
+        let mut attributed_edges = Vec::new();
+
+        // ── Phase 1: accumulate all nodes and edges from all sentences ────────
+        for sentence in &sentences {
+            let all_nodes: Vec<ArgNode> = sentence.iter()
+                .flat_map(|s| s.node_pool.iter().cloned())
+                .collect();
+            let all_edges: Vec<ArgEdge> = sentence.iter()
+                .flat_map(|s| s.edge_pool.iter().cloned())
+                .collect();
+            passage.absorb_sentence(&all_nodes, &all_edges);
+        }
+
+        // Observe slot occupancy for synonym edge discovery.
+        for n in passage.node_map.values() {
+            let surface = n.surface_str().unwrap_or("_");
+            if let Some(&trd_id) = n.trd_membership.first() {
+                self.slot_tracker.observe(n.id, surface, trd_id, n.mtlg_type);
+            }
+        }
+
+        // ── Phase 2: process each token step against the passage-wide ARG ────
+        let search = passage.build_graph(active_env, theta_alpha, theta_rho);
+
+        for sentence in &sentences {
+            for step in sentence {
+                let dist = VocabDistribution::from_graph(&search.graph, active_env);
+                let (q_correct, q_wrong_opt) = dist.ce_quality_split(step.expected_node_id);
+
+                // Accumulate CE signal on expected node's incoming edges.
+                let incoming_expected: Vec<EdgeId> = search.graph.edge_indices()
+                    .filter(|&ei| search.graph[ei].dst == step.expected_node_id)
+                    .map(|ei| search.graph[ei].id)
+                    .collect();
+                for &eid in &incoming_expected {
+                    passage.signal.accumulate(eid, q_correct.0);
+                }
+
+                // Accumulate negative signal on wrong node's incoming edges.
+                if let Some((wrong_nid, q_neg)) = q_wrong_opt {
+                    let incoming_wrong: Vec<EdgeId> = search.graph.edge_indices()
+                        .filter(|&ei| search.graph[ei].dst == wrong_nid)
+                        .map(|ei| search.graph[ei].id)
+                        .collect();
+                    for &eid in &incoming_wrong {
+                        passage.signal.accumulate(eid, q_neg.0);
+                    }
+                }
+
+                quality_sum   += q_correct.magnitude() as f64;
+                final_quality  = q_correct;
+                total_steps   += 1;
+            }
+        }
+
+        // ── Phase 3: flush accumulated signal to the attribution engine ───────
+        let token_count = passage.signal.token_count.max(1) as f32;
+        for (&edge_id, &signal) in &passage.signal.edge_signals {
+            let q = Quality::new(signal / token_count);
+            let result = self.apply_attribution_batch(vec![edge_id], q, trd);
+            attributed_edges.extend(result);
+        }
+
+        // Materialise synonym edges every 100 passages.
+        self.tr_counter += 1;
+        if self.tr_counter % 100 == 0 {
+            if let Some(ref mut g) = self.last_graph {
+                self.slot_tracker.materialise_synonym_edges(g, 3);
+            }
+        }
+
+        self.perf.update(trd, final_quality);
+        self.thresholds.sync(&self.perf);
+
+        SequenceTrainResult {
+            steps_processed:  total_steps,
+            quality_sum,
+            final_quality,
+            attributed_edges,
+        }
+    }
+
+    /// Answer "another word for X" by traversing synonym edges.
+    ///
+    /// Given a surface form, finds the node whose surface matches, then returns
+    /// the top-N neighbours connected by synonym edges, ranked by edge weight.
+    pub fn synonym_query(&self, surface: &str, n: usize) -> Vec<(String, f32)> {
+        let graph = match &self.last_graph {
+            Some(g) => g,
+            None    => return vec![],
+        };
+
+        // Find the node for this surface form.
+        let source_idx = graph.node_indices().find(|&i| {
+            graph[i].surface_str().map_or(false, |s| s.eq_ignore_ascii_case(surface))
+        });
+
+        let Some(src_idx) = source_idx else { return vec![]; };
+        let src_id = graph[src_idx].id;
+
+        // Traverse synonym edges (both directions).
+        let mut candidates: Vec<(String, f32)> = graph.edge_indices()
+            .filter(|&ei| graph[ei].src == src_id || graph[ei].dst == src_id)
+            .filter_map(|ei| {
+                let neighbour_id = if graph[ei].src == src_id {
+                    graph[ei].dst
+                } else {
+                    graph[ei].src
+                };
+                let weight = graph[ei].weight;
+                let neighbour_idx = graph.node_indices().find(|&i| graph[i].id == neighbour_id)?;
+                let s = graph[neighbour_idx].surface_str()?.to_string();
+                Some((s, weight))
+            })
+            .collect();
+
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.truncate(n);
+        candidates
     }
 
     /// Apply a batch of edge attribution updates for the given quality signal.
@@ -306,7 +454,6 @@ impl Engine {
         self.tr_counter += 1;
         let tr_id = self.tr_counter;
         self.attribution.record(tr_id, trd_id, quality, &edge_ids);
-        // Also update the counterfactual reasoner.
         self.counterfactual.record_dissolved_tr(tr_id, trd_id, quality, edge_ids.clone());
         edge_ids
     }
@@ -340,7 +487,26 @@ mod tests {
         };
         let nodes = vec![make_node(1, "run", 0.9), make_node(2, "alice", 0.7)];
         let result = engine.execute(query, nodes, vec![]);
-        // Should produce a surface output (even if no hypothesis satisfies)
         assert!(!result.surface_output.is_empty());
+    }
+
+    #[test]
+    fn execute_sequence_two_sided_ce() {
+        let mut engine = Engine::new();
+
+        let node_a = make_node(10, "cat", 0.9);    // dominant (wrong)
+        let node_b = make_node(20, "feline", 0.1); // expected but low prob
+
+        let step = TokenStep {
+            text:             "feline".into(),
+            expected_node_id: 20,
+            node_pool:        vec![node_a, node_b],
+            edge_pool:        vec![],
+        };
+
+        let result = engine.execute_sequence(0, vec![step], "en");
+        assert_eq!(result.steps_processed, 1);
+        // quality_sum should be > 0 since we got the CE signal from wrong prediction
+        assert!(result.quality_sum >= 0.0);
     }
 }

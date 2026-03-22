@@ -1,38 +1,30 @@
 //! VocabDistribution: softmax over active ARG nodes for P(token|context).
 //! Maps cross-entropy gradient to Quality signal for teacher forcing.
+//! Vocabulary identity is the NodeId itself — not a transient edge ID.
 
-use crate::types::{NodeId, EdgeId, Quality, Env};
+use crate::types::{NodeId, Quality, Env};
 use crate::arg::ArgGraph;
 
 /// Probability distribution over active nodes, derived from attribution scores.
 pub struct VocabDistribution {
-    /// (node_id, edge_id) → probability under softmax.
-    pub probs: Vec<(NodeId, EdgeId, f32)>,
+    /// (node_id, probability) under softmax.
+    pub probs: Vec<(NodeId, f32)>,
 }
 
 impl VocabDistribution {
     /// Build a softmax distribution over the active nodes in the ARG.
     ///
     /// Each node contributes its `attribution_score` as the logit.
-    /// Edge IDs are taken from the first outgoing edge of each node (or 0 if none).
+    /// NodeId is the stable vocabulary index — not a transient edge ID.
     pub fn from_graph(graph: &ArgGraph, active_env: Env) -> Self {
-        use petgraph::visit::EdgeRef;
-
-        let active: Vec<(NodeId, EdgeId, f32)> = graph.node_indices()
+        let active: Vec<(NodeId, f32)> = graph.node_indices()
             .filter(|&ni| {
                 let n = &graph[ni];
                 (n.atms_label & active_env) != 0
             })
             .map(|ni| {
                 let n = &graph[ni];
-                let node_id = n.id;
-                let score   = n.attribution_score;
-                // Take the first outgoing edge ID as the "edge for this token".
-                let edge_id = graph.edges(ni)
-                    .next()
-                    .map(|e| graph[e.id()].id)
-                    .unwrap_or(0);
-                (node_id, edge_id, score)
+                (n.id, n.attribution_score)
             })
             .collect();
 
@@ -41,34 +33,49 @@ impl VocabDistribution {
         }
 
         // Softmax over attribution scores.
-        let max_score = active.iter().map(|&(_, _, s)| s).fold(f32::NEG_INFINITY, f32::max);
-        let mut exps: Vec<f32> = active.iter().map(|&(_, _, s)| (s - max_score).exp()).collect();
+        let max_score = active.iter().map(|&(_, s)| s).fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = active.iter().map(|&(_, s)| (s - max_score).exp()).collect();
         let sum: f32 = exps.iter().sum::<f32>() + 1e-12;
-        for e in &mut exps { *e /= sum; }
 
-        let probs = active.into_iter()
-            .zip(exps)
-            .map(|((nid, eid, _), p)| (nid, eid, p))
-            .collect();
-
-        Self { probs }
+        Self {
+            probs: active.into_iter()
+                .zip(exps)
+                .map(|((nid, _), p)| (nid, p / sum))
+                .collect(),
+        }
     }
 
-    /// Probability of the node associated with `edge_id`.
-    pub fn probability_of_edge(&self, edge_id: EdgeId) -> f32 {
+    /// Probability of the node with `node_id`.
+    pub fn probability_of_node(&self, node_id: NodeId) -> f32 {
         self.probs.iter()
-            .find(|&&(_, eid, _)| eid == edge_id)
-            .map(|&(_, _, p)| p)
+            .find(|&&(nid, _)| nid == node_id)
+            .map(|&(_, p)| p)
             .unwrap_or(0.0)
     }
 
-    /// Compute a Quality signal via cross-entropy.
+    /// CE quality split against the expected node.
     ///
-    /// CE = −log(P(expected)), clamped. Mapped to Quality via `Quality::from_ce`.
-    /// `was_correct`: whether the predicted token matched the expected token.
-    pub fn ce_quality(&self, expected_edge_id: EdgeId, was_correct: bool) -> Quality {
-        let p = self.probability_of_edge(expected_edge_id).max(1e-12);
-        Quality::from_ce(p, was_correct)
+    /// Returns:
+    /// - `q_correct`: positive quality for the expected node's incoming edges
+    ///   (pull toward correct). Signal = (1 - P(expected)).
+    /// - `q_wrong`: if the top-scoring node differs from expected, a negative
+    ///   quality for that node's incoming edges (push away from wrong).
+    ///   Signal = -P(wrong).
+    ///
+    /// Caller applies positive update to expected node's incoming edges and
+    /// negative update to the wrongly-predicted node's incoming edges (if any).
+    pub fn ce_quality_split(&self, expected_node_id: NodeId) -> (Quality, Option<(NodeId, Quality)>) {
+        let p_expected = self.probability_of_node(expected_node_id).max(1e-12);
+        let predicted = self.probs.iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|&(nid, p)| (nid, p));
+
+        let q_correct = Quality::from_ce(p_expected, true);
+        let q_wrong = predicted
+            .filter(|&(nid, _)| nid != expected_node_id)
+            .map(|(nid, p)| (nid, Quality::from_ce(p, false)));
+
+        (q_correct, q_wrong)
     }
 }
 
@@ -90,7 +97,7 @@ mod tests {
             g.add_node(n);
         }
         let dist = VocabDistribution::from_graph(&g, 0b1);
-        let total: f32 = dist.probs.iter().map(|&(_, _, p)| p).sum();
+        let total: f32 = dist.probs.iter().map(|&(_, p)| p).sum();
         assert!((total - 1.0).abs() < 1e-5, "probs should sum to 1, got {}", total);
     }
 
@@ -108,10 +115,30 @@ mod tests {
         g.add_node(n1);
         g.add_node(n2);
         let dist = VocabDistribution::from_graph(&g, 0b1);
-        // n1 has low probability; when it is the correct answer, update signal = 1 - p ≈ high
-        let p_n1 = dist.probs.iter().find(|&&(nid, _, _)| nid == 1).map(|&(_, _, p)| p).unwrap_or(0.0);
+        let p_n1 = dist.probs.iter().find(|&&(nid, _)| nid == 1).map(|&(_, p)| p).unwrap_or(0.0);
         let q = Quality::from_ce(p_n1, true);
         assert!(q.as_f32() > 0.5,
             "low-prob correct prediction gives large CE update signal (1 - p ≈ high), got {}", q.as_f32());
+    }
+
+    #[test]
+    fn ce_quality_split_wrong_prediction_gives_negative_signal() {
+        let mut g: ArgGraph = StableGraph::new();
+        let mt = ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right);
+        // Node 1 = expected (low score), Node 2 = wrong prediction (high score).
+        let mut n1 = ArgNode::new(1, NodeClass::DEFAULT, mt, (0, 0));
+        n1.attribution_score = 0.1;
+        n1.atms_label = 0b1;
+        let mut n2 = ArgNode::new(2, NodeClass::DEFAULT, mt, (0, 0));
+        n2.attribution_score = 10.0;
+        n2.atms_label = 0b1;
+        g.add_node(n1);
+        g.add_node(n2);
+        let dist = VocabDistribution::from_graph(&g, 0b1);
+        let (q_correct, q_wrong) = dist.ce_quality_split(1);
+        assert!(q_correct.as_f32() > 0.0, "expected node gets positive signal");
+        let (wrong_nid, q_neg) = q_wrong.expect("should have a wrong-prediction penalty");
+        assert_eq!(wrong_nid, 2, "wrong node is the high-score one");
+        assert!(q_neg.is_negative(), "wrong prediction gets negative signal, got {}", q_neg.as_f32());
     }
 }
