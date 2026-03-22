@@ -8,8 +8,8 @@ use petgraph::stable_graph::{StableGraph, NodeIndex};
 use petgraph::Directed;
 use crate::types::{NodeId, EdgeId, Env, TRDId, ModalType, ModalMode};
 use crate::arg::{
-    node::{ArgNode, NodeType},
-    edge::{ArgEdge, EdgeType},
+    node::{ArgNode, NodeClass},
+    edge::{ArgEdge, EdgeClass},
 };
 use crate::atms::base::env::subsumes;
 
@@ -128,7 +128,7 @@ mod tests {
     use crate::types::{ModalType, ModalMode, TypeCategory};
 
     fn make_active_node(id: NodeId, env: Env, score: f32) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept, ModalType::default(), (0, 0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT, ModalType::default(), (0, 0));
         n.atms_label = env;
         n.attribution_score = score;
         n

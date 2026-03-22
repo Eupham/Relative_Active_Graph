@@ -4,14 +4,17 @@
 //! Query format:
 //!   {"type":"query","text":"...","situation_id":1,"trd":null,"language":"en","nodes":[...],"edges":[...]}
 //! Result format:
-//!   {"surface":"...","satisfied":true,"depth":0,"quality":"Good"}
+//!   {"surface":"...","satisfied":true,"depth":0,"quality":0.9}
+//!
+//! Train format:
+//!   {"type":"train_sequence","trd":0,"tokens":[{"text":"...","expected_edge_id":1},...],"language":"en"}
 
 use std::io::{self, BufRead, Write};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use csrre_core::{
     Engine, Query, Quality,
-    arg::{ArgNode, NodeType, ArgEdge, EdgeType},
+    arg::{ArgNode, NodeClass, ArgEdge, EdgeClass},
     types::{ModalType, ModalMode, TypeCategory, Direction, TRDId},
 };
 
@@ -47,7 +50,8 @@ struct WireNode {
     surface: Option<String>,
     score:   f32,
     mode:    Option<String>,   // "diamond", "box", "lozenge"
-    cat:     Option<String>,   // "scene", "process", etc.
+    /// Numeric category ID (0 = DEFAULT/unassigned, 1-6 = structural prototypes).
+    cat:     Option<u32>,
     arity:   Option<u8>,
 }
 
@@ -72,7 +76,8 @@ struct WireResult {
     surface:   String,
     satisfied: bool,
     depth:     usize,
-    quality:   &'static str,
+    /// Quality as a float in [0.0, 1.0].
+    quality:   f32,
 }
 
 fn default_lang() -> String { "en".into() }
@@ -87,28 +92,16 @@ fn parse_mode(s: Option<&str>) -> ModalMode {
     }
 }
 
-fn parse_category(s: Option<&str>) -> TypeCategory {
-    match s {
-        Some("process")     => TypeCategory::Process,
-        Some("state")       => TypeCategory::State,
-        Some("participant") => TypeCategory::Participant,
-        Some("adverbial")   => TypeCategory::Adverbial,
-        Some("connector")   => TypeCategory::Connector,
-        Some("ground")      => TypeCategory::Ground,
-        _                   => TypeCategory::Scene,
-    }
-}
-
 fn wire_node_to_arg(w: WireNode) -> ArgNode {
     let mode  = parse_mode(w.mode.as_deref());
-    let cat   = parse_category(w.cat.as_deref());
+    let cat   = TypeCategory(w.cat.unwrap_or(0));
     let arity = w.arity.unwrap_or(0);
     let mt    = if arity > 0 {
         ModalType::functor(mode, cat, arity, Direction::Right)
     } else {
         ModalType::atom(mode, cat)
     };
-    let mut node = ArgNode::new(w.id, NodeType::Concept, mt, (0, 0));
+    let mut node = ArgNode::new(w.id, NodeClass::DEFAULT, mt, (0, 0));
     if let Some(s) = w.surface { node.surface = Some(s.into_bytes()); }
     node.attribution_score = w.score;
     node.atms_label = 0b1; // all nodes active in first context
@@ -117,17 +110,9 @@ fn wire_node_to_arg(w: WireNode) -> ArgNode {
 
 fn wire_edge_to_arg(w: WireEdge) -> ArgEdge {
     let mode = parse_mode(w.mode.as_deref());
-    let mut edge = ArgEdge::new(w.id, w.src, w.dst, EdgeType::Composition, mode);
+    let mut edge = ArgEdge::new(w.id, w.src, w.dst, EdgeClass::DEFAULT, mode);
     if let Some(wt) = w.weight { edge.weight = wt; }
     edge
-}
-
-fn quality_str(q: Quality) -> &'static str {
-    match q {
-        Quality::Good    => "Good",
-        Quality::Partial => "Partial",
-        Quality::Bad     => "Bad",
-    }
 }
 
 // ─── Main loop ────────────────────────────────────────────────────────────────
@@ -161,13 +146,12 @@ fn main() -> Result<()> {
                     surface:   result.surface_output,
                     satisfied: result.satisfied,
                     depth:     result.depth_used,
-                    quality:   quality_str(result.quality),
+                    quality:   result.quality.as_f32(),
                 };
                 writeln!(out, "{}", serde_json::to_string(&wire)?)?;
                 out.flush()?;
             }
             Ok(WireMessage::RegisterLexicon(entry)) => {
-                // Register a lexicon entry into the linearizer.
                 log::info!("Registered lexicon: {} → {} ({})", entry.predicate, entry.surface, entry.language);
                 engine.global_lexicon.insert(entry.predicate.clone(), csrre_core::generation::LexEntry {
                     predicate: entry.predicate,

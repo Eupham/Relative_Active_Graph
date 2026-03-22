@@ -66,12 +66,12 @@ pub fn build_schedule(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::{ArgNode, NodeType, ArgEdge, EdgeType};
+    use crate::arg::{ArgNode, NodeClass, ArgEdge, EdgeClass};
     use crate::types::{ModalType, Quality};
     use petgraph::stable_graph::StableGraph;
 
     fn node_with_depth(id: u64, depth: f32, trd: TRDId) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept, ModalType::default(), (0,0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT, ModalType::default(), (0,0));
         n.depth = depth;
         n.trd_membership = vec![trd];
         n.atms_label = 0b1;
@@ -86,9 +86,9 @@ mod tests {
 
         let mut perf = PerfRegistry::new(0.25);
         // TRD 0: all good (high p_ema)
-        for _ in 0..10 { perf.update(0, Quality::Good); }
+        for _ in 0..10 { perf.update(0, Quality::GOOD); }
         // TRD 1: all bad (low p_ema)
-        for _ in 0..10 { perf.update(1, Quality::Bad); }
+        for _ in 0..10 { perf.update(1, Quality::BAD); }
 
         let cost0 = node_cost(1, &g, Some(0), &perf);
         let cost1 = node_cost(2, &g, Some(1), &perf);

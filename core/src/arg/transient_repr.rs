@@ -110,7 +110,7 @@ mod tests {
             1, 100,
             RepContent::Lambda("λx.pred(x)".into()),
             0b111,
-            ModalType::atom(ModalMode::Diamond, TypeCategory::Scene),
+            ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT),
             Granularity::Sentence,
         )
     }

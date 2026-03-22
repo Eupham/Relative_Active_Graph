@@ -90,12 +90,12 @@ impl ArgTraverser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::{ArgNode, NodeType, ArgEdge, EdgeType};
+    use crate::arg::{ArgNode, NodeClass, ArgEdge, EdgeClass};
     use crate::types::{ModalType, ModalMode};
     use petgraph::stable_graph::StableGraph;
 
     fn node(id: u64, score: f32) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept, ModalType::default(), (0,0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT, ModalType::default(), (0,0));
         n.attribution_score = score;
         n.atms_label = 0b1;
         n
@@ -106,7 +106,7 @@ mod tests {
         let mut g: ArgGraph = StableGraph::new();
         let a = g.add_node(node(1, 0.9));
         let b = g.add_node(node(2, 0.5));
-        g.add_edge(a, b, ArgEdge::new(1, 1, 2, EdgeType::Composition, ModalMode::Diamond));
+        g.add_edge(a, b, ArgEdge::new(1, 1, 2, EdgeClass::DEFAULT, ModalMode::Diamond));
 
         let mut traverser = ArgTraverser::new(10, None);
         let mut thresholds = ThresholdRegistry::default();

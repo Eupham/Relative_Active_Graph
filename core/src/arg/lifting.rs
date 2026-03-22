@@ -106,24 +106,24 @@ mod tests {
     #[test]
     fn rule_applies_matching_type() {
         let rule = ModalLiftingRule::new(
-            1, "scene-to-process",
-            ModalMode::Diamond, TypeCategory::Scene,
-            ModalMode::Diamond, TypeCategory::Process,
+            1, "cat7-to-cat1",
+            ModalMode::Diamond, TypeCategory(7),
+            ModalMode::Diamond, TypeCategory(1),
         );
-        let ty = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+        let ty = ModalType::atom(ModalMode::Diamond, TypeCategory(7));
         let result = rule.apply(ty).unwrap();
-        assert_eq!(result.category, TypeCategory::Process);
+        assert_eq!(result.category, TypeCategory(1));
         assert_eq!(result.mode, ModalMode::Diamond);
     }
 
     #[test]
     fn rule_rejects_non_matching() {
         let rule = ModalLiftingRule::new(
-            1, "scene-to-process",
-            ModalMode::Diamond, TypeCategory::Scene,
-            ModalMode::Diamond, TypeCategory::Process,
+            1, "cat7-to-cat1",
+            ModalMode::Diamond, TypeCategory(7),
+            ModalMode::Diamond, TypeCategory(1),
         );
-        let ty = ModalType::atom(ModalMode::Box, TypeCategory::Scene);
+        let ty = ModalType::atom(ModalMode::Box, TypeCategory(7));
         assert!(rule.apply(ty).is_none());
     }
 }

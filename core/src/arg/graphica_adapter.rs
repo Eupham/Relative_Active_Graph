@@ -31,9 +31,7 @@ pub fn structural_hash(nodes: &[&ArgNode], edges: &[&ArgEdge]) -> u64 {
 /// Build a CacheKey from a subgraph's hash + ATMS environment + dominant modal profile.
 pub fn build_key(nodes: &[&ArgNode], edges: &[&ArgEdge], env: Env) -> CacheKey {
     let hash = structural_hash(nodes, edges);
-    // Dominant modal mode: mode with most edges.
     let modal_mode = dominant_modal_mode(edges);
-    // Dominant category: mode with most nodes.
     let modal_cat  = dominant_type_category(nodes);
     CacheKey { hash, env, modal_mode, modal_cat }
 }
@@ -55,23 +53,12 @@ fn dominant_modal_mode(edges: &[&ArgEdge]) -> ModalMode {
 }
 
 fn dominant_type_category(nodes: &[&ArgNode]) -> TypeCategory {
-    let mut counts = [0usize; 7];
-    for n in nodes {
-        let idx = match n.mtlg_type.category {
-            TypeCategory::Scene       => 0,
-            TypeCategory::Process     => 1,
-            TypeCategory::State       => 2,
-            TypeCategory::Participant => 3,
-            TypeCategory::Adverbial   => 4,
-            TypeCategory::Connector   => 5,
-            TypeCategory::Ground      => 6,
-        };
-        counts[idx] += 1;
-    }
-    let max_idx = counts.iter().enumerate().max_by_key(|&(_, c)| c).map(|(i, _)| i).unwrap_or(0);
-    [TypeCategory::Scene, TypeCategory::Process, TypeCategory::State,
-     TypeCategory::Participant, TypeCategory::Adverbial, TypeCategory::Connector,
-     TypeCategory::Ground][max_idx]
+    let mut counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for n in nodes { *counts.entry(n.mtlg_type.category.id()).or_insert(0) += 1; }
+    counts.into_iter()
+        .max_by_key(|&(_, c)| c)
+        .map(|(id, _)| TypeCategory(id))
+        .unwrap_or(TypeCategory::DEFAULT)
 }
 
 /// The Graphica memo cache.
@@ -114,14 +101,14 @@ impl Default for GraphicaCache {
 mod tests {
     use super::*;
     use crate::types::{ModalMode, TypeCategory, ModalType};
-    use crate::arg::{node::{ArgNode, NodeType}, edge::{ArgEdge, EdgeType}};
+    use crate::arg::{node::{ArgNode, NodeClass}, edge::{ArgEdge, EdgeClass}};
 
     fn make_node(id: NodeId) -> ArgNode {
-        ArgNode::new(id, NodeType::Concept, ModalType::default(), (0, 0))
+        ArgNode::new(id, NodeClass::DEFAULT, ModalType::default(), (0, 0))
     }
 
     fn make_edge(id: EdgeId, src: NodeId, dst: NodeId) -> ArgEdge {
-        ArgEdge::new(id, src, dst, EdgeType::Composition, ModalMode::Diamond)
+        ArgEdge::new(id, src, dst, EdgeClass::DEFAULT, ModalMode::Diamond)
     }
 
     #[test]

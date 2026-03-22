@@ -10,11 +10,11 @@ pub mod symbolica_adapter;
 pub mod transient_repr;
 
 pub use context_stack::ContextStack;
-pub use edge::{ArgEdge, EdgeType};
+pub use edge::{ArgEdge, EdgeClass};
 pub use egraph_adapter::ArgEGraph;
 pub use graphica_adapter::GraphicaCache;
 pub use lifting::LiftingRuleRegistry;
-pub use node::{ArgNode, NodeType};
+pub use node::{ArgNode, NodeClass};
 pub use search::{ArgSearch, ArgGraph};
 pub use situation::{SituationRegistry, Trd};
 pub use transient_repr::{Tr, Lifecycle, RepContent, Granularity};

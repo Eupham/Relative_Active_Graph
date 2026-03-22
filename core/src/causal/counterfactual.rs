@@ -111,8 +111,8 @@ mod tests {
         let mut g: ArgGraph = petgraph::stable_graph::StableGraph::new();
         let mut reasoner = CounterfactualReasoner::new(0b11, 42);
         // Feed quality samples for edge 10 in TRD 0
-        for _ in 0..5 { reasoner.record_dissolved_tr(1, 0, Quality::Good, vec![10]); }
-        for _ in 0..5 { reasoner.record_dissolved_tr(2, 0, Quality::Bad, vec![10]); }
+        for _ in 0..5 { reasoner.record_dissolved_tr(1, 0, Quality::GOOD, vec![10]); }
+        for _ in 0..5 { reasoner.record_dissolved_tr(2, 0, Quality::BAD, vec![10]); }
         let delta = reasoner.compute_delta(10, 0, &g);
         assert!(!delta.is_causal_phase); // not enough samples for causal
         assert!((0.0..=1.0).contains(&delta.delta));

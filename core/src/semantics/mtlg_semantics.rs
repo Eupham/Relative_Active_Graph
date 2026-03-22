@@ -64,11 +64,11 @@ impl LambdaTerm {
     pub fn ucca_category(&self, type_map: &HashMap<String, ModalType>) -> TypeCategory {
         match self {
             LambdaTerm::Pred(name, _) => {
-                type_map.get(name).map_or(TypeCategory::Scene, |mt| mt.category)
+                type_map.get(name).map_or(TypeCategory::DEFAULT, |mt| mt.category)
             }
             LambdaTerm::App(f, _) => f.ucca_category(type_map),
             LambdaTerm::Abs(_, ty, _) => ty.category,
-            _ => TypeCategory::Scene,
+            _ => TypeCategory::DEFAULT,
         }
     }
 }
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn beta_reduce_basic() {
-        let mt = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+        let mt = ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT);
         let term = LambdaTerm::App(
             Box::new(LambdaTerm::Abs("x".into(), mt, Box::new(LambdaTerm::Var("x".into())))),
             Box::new(LambdaTerm::Const("alice".into())),
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn drs_update_extracts_vars() {
-        let mt = ModalType::atom(ModalMode::Diamond, TypeCategory::Participant);
+        let mt = ModalType::atom(ModalMode::Diamond, TypeCategory(6));
         let term = LambdaTerm::Abs("x".into(), mt, Box::new(LambdaTerm::Pred("run".into(), vec![LambdaTerm::Var("x".into())])));
         let update = DrsUpdate::from_lambda(&term, &[]);
         assert!(update.new_referents.contains(&"x".into()));

@@ -24,7 +24,7 @@ use rand::prelude::*;
 use crate::types::{
     TypeCategory, ModalMode, ModalType, Direction, NodeId, EdgeId, Env,
 };
-use crate::arg::{ArgNode, ArgEdge, NodeType, EdgeType};
+use crate::arg::{ArgNode, ArgEdge, NodeClass, EdgeClass};
 use super::ud_types::{
     UdToken, UdTree,
     is_core_arg, is_clausal, is_adverbial, is_predicative,
@@ -173,24 +173,24 @@ pub fn extract_structure(tok: &UdToken, tree: &UdTree) -> TokenStructure {
 pub fn score_ucca(s: &TokenStructure) -> (Option<TypeCategory>, f64) {
     // ── Strongly eventive ────────────────────────────────────────────────────
     if s.n_core_arg_dependents >= 1 || s.n_clausal_dependents >= 1 || s.is_tree_root {
-        return (Some(TypeCategory::Process), CONFIDENCE_HIGH);
+        return (Some(TypeCategory(1)), CONFIDENCE_HIGH);
     }
 
     // ── Structural role: connector or discourse ──────────────────────────────
-    if s.self_is_connector  { return (Some(TypeCategory::Connector), CONFIDENCE_HIGH); }
-    if s.self_is_discourse  { return (Some(TypeCategory::Ground),    CONFIDENCE_HIGH); }
+    if s.self_is_connector  { return (Some(TypeCategory(2)), CONFIDENCE_HIGH); }
+    if s.self_is_discourse  { return (Some(TypeCategory(3)), CONFIDENCE_HIGH); }
 
     // ── Structural role: adverbial modification ──────────────────────────────
-    if s.self_is_adverbial  { return (Some(TypeCategory::Adverbial), CONFIDENCE_MEDIUM); }
+    if s.self_is_adverbial  { return (Some(TypeCategory(4)), CONFIDENCE_MEDIUM); }
 
     // ── Structural role: predicative (stative) modification ──────────────────
-    if s.self_is_predicative { return (Some(TypeCategory::State), CONFIDENCE_MEDIUM); }
+    if s.self_is_predicative { return (Some(TypeCategory(5)), CONFIDENCE_MEDIUM); }
 
     // ── Structural role: core argument ───────────────────────────────────────
     if s.self_is_core_arg {
         if s.n_total_dependents == 0 && s.n_morphological_features <= 3 {
             // Morphologically simple leaf in core arg position: Participant.
-            return (Some(TypeCategory::Participant), CONFIDENCE_MEDIUM);
+            return (Some(TypeCategory(6)), CONFIDENCE_MEDIUM);
         }
         // Morphologically complex or has dependents — could be event nominal.
         // Defer to CategoryInducer: evidence is ambiguous.
@@ -198,10 +198,10 @@ pub fn score_ucca(s: &TokenStructure) -> (Option<TypeCategory>, f64) {
     }
 
     // ── Structural role: clausal (as dependent, not head) ────────────────────
-    if s.self_is_clausal    { return (Some(TypeCategory::Scene), CONFIDENCE_MEDIUM); }
+    if s.self_is_clausal    { return (Some(TypeCategory::DEFAULT), CONFIDENCE_MEDIUM); }
 
     // ── Functional element ────────────────────────────────────────────────────
-    if s.self_is_functional { return (Some(TypeCategory::Scene), 0.60); }
+    if s.self_is_functional { return (Some(TypeCategory::DEFAULT), 0.60); }
 
     // ── Insufficient structural evidence ─────────────────────────────────────
     (None, 0.30)
@@ -384,7 +384,7 @@ impl CategoryInducer {
             labels.insert(c, if cat.is_some() && conf >= 0.50 {
                 cat.unwrap()
             } else {
-                TypeCategory::Scene
+                TypeCategory::DEFAULT
             });
         }
 
@@ -394,7 +394,7 @@ impl CategoryInducer {
 
     /// Assign UCCA category to a deferred token via nearest-centroid lookup.
     pub fn predict(&self, s: &TokenStructure) -> TypeCategory {
-        if self.centroids.is_empty() { return TypeCategory::Scene; }
+        if self.centroids.is_empty() { return TypeCategory::DEFAULT; }
         let vec = structure_to_vector(s, &self.morph_vocab);
         let best = self.centroids.iter()
             .enumerate()
@@ -405,7 +405,7 @@ impl CategoryInducer {
             })
             .map(|(i, _)| i)
             .unwrap_or(0);
-        self.cluster_labels.get(&best).copied().unwrap_or(TypeCategory::Scene)
+        self.cluster_labels.get(&best).copied().unwrap_or(TypeCategory::DEFAULT)
     }
 }
 
@@ -583,7 +583,7 @@ pub fn resolve_deferred(graphs: &mut [MtlgGraph]) -> CategoryInducer {
                     let cat = graph.nodes.iter()
                         .find(|n| n.token_id == edge.dst_id)
                         .map(|n| inducer.predict(&n.structure))
-                        .unwrap_or(TypeCategory::Scene);
+                        .unwrap_or(TypeCategory::DEFAULT);
                     edge.ucca_cat = Some(cat);
                 }
             }
@@ -608,10 +608,10 @@ impl MtlgGraph {
         base_id: NodeId,
     ) -> (Vec<ArgNode>, Vec<ArgEdge>) {
         let nodes: Vec<ArgNode> = self.nodes.iter().map(|mn| {
-            let cat  = mn.ucca_cat.unwrap_or(TypeCategory::Scene);
+            let cat  = mn.ucca_cat.unwrap_or(TypeCategory::DEFAULT);
             let mt   = ModalType::functor(mn.modal_mode, cat, mn.arity, Direction::Right);
             let nid  = base_id + mn.token_id as u64;
-            let mut n = ArgNode::new(nid, NodeType::Atom, mt, (0, 0));
+            let mut n = ArgNode::new(nid, NodeClass::DEFAULT, mt, (0, 0));
             n.surface     = Some(mn.text.as_bytes().to_vec());
             n.atms_label  = env;
             n
@@ -624,7 +624,7 @@ impl MtlgGraph {
                 base_id + i as u64 + 1000,
                 src,
                 dst,
-                EdgeType::Dependency,
+                EdgeClass::DEFAULT,
                 me.modal_mode,
             )
         }).collect();
@@ -677,7 +677,7 @@ mod tests {
         let s    = extract_structure(runs, &tree);
         assert!(s.is_tree_root);
         let (cat, conf) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Process));
+        assert_eq!(cat, Some(TypeCategory(1)));
         assert!(conf >= CONFIDENCE_HIGH - 1e-6);
     }
 
@@ -689,7 +689,7 @@ mod tests {
         assert!(s.self_is_core_arg);
         assert_eq!(s.n_total_dependents, 0);
         let (cat, _) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Participant));
+        assert_eq!(cat, Some(TypeCategory(6)));
     }
 
     #[test]
@@ -699,7 +699,7 @@ mod tests {
         let s       = extract_structure(quickly, &tree);
         assert!(s.self_is_adverbial);
         let (cat, _) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Adverbial));
+        assert_eq!(cat, Some(TypeCategory(4)));
     }
 
     #[test]
@@ -780,7 +780,7 @@ mod tests {
         // return Process regardless of the UPOS string.
         let s = extract_structure(&fake_tok, &tree);
         let (cat, _) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Process),
+        assert_eq!(cat, Some(TypeCategory(1)),
             "category must come from structural evidence, not the UPOS string");
     }
 }

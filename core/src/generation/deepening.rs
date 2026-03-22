@@ -2,7 +2,7 @@
 //! Each deepening round expands the ARG one step further and re-generates hypotheses.
 
 use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory, Direction};
-use crate::arg::{ArgGraph, ArgNode, ArgEdge, NodeType, EdgeType};
+use crate::arg::{ArgGraph, ArgNode, ArgEdge, NodeClass, EdgeClass};
 use crate::adaptive::{PerfRegistry, ThresholdRegistry};
 use crate::generation::{
     hypothesis::{Hypothesis, generate_hypotheses, filter_satisfying},
@@ -82,8 +82,8 @@ mod tests {
     use crate::arg::search::ArgGraph;
 
     fn node_with_surface(id: u64, surface: &str, score: f32) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept,
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right), (0,0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT,
+            ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right), (0,0));
         n.surface = Some(surface.as_bytes().to_vec());
         n.attribution_score = score;
         n.atms_label = 0b1;
@@ -104,9 +104,9 @@ mod tests {
         let mut sem2 = MtlgSemantics::new();
         sem2.register_type(
             "run".into(),
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+            ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
         );
-        let expected = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+        let expected = ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT);
         let result = deepener.run(&g, &sem2, &perf, &mut thresh, "run", &expected);
         assert!(result.satisfied, "should find 'run' at depth 0");
         assert_eq!(result.depth_used, 0);
@@ -122,7 +122,7 @@ mod tests {
         let deepener   = ProgressiveDeepener::new(None);
 
         // Query expects Box/Process — node is Diamond/Scene — no match.
-        let expected = ModalType::atom(ModalMode::Box, TypeCategory::Process);
+        let expected = ModalType::atom(ModalMode::Box, TypeCategory(1));
         let result = deepener.run(&g, &sem, &perf, &mut thresh, "nonexistent_predicate", &expected);
         assert!(!result.satisfied);
     }

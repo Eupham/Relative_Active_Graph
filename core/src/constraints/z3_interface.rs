@@ -124,29 +124,29 @@ mod tests {
 
     #[test]
     fn valid_application() {
-        let f = d(TypeCategory::Scene, 1);
-        let a = d(TypeCategory::Participant, 0);
+        let f = d(TypeCategory::DEFAULT, 1);
+        let a = d(TypeCategory(6), 0);
         assert!(check_application(f, a, true).is_valid());
     }
 
     #[test]
     fn saturated_functor_fails() {
-        let f = d(TypeCategory::Scene, 0);
-        let a = d(TypeCategory::Participant, 0);
+        let f = d(TypeCategory::DEFAULT, 0);
+        let a = d(TypeCategory(6), 0);
         assert!(!check_application(f, a, true).is_valid());
     }
 
     #[test]
     fn mode_mismatch_fails() {
-        let f = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right);
-        let a = ModalType::functor(ModalMode::Box,     TypeCategory::Scene, 0, Direction::Right);
+        let f = ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right);
+        let a = ModalType::functor(ModalMode::Box,     TypeCategory::DEFAULT, 0, Direction::Right);
         assert!(!check_application(f, a, true).is_valid());
     }
 
     #[test]
     fn direction_mismatch_fails() {
-        let f = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right);
-        let a = ModalType::functor(ModalMode::Diamond, TypeCategory::Participant, 0, Direction::Right);
+        let f = ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right);
+        let a = ModalType::functor(ModalMode::Diamond, TypeCategory(6), 0, Direction::Right);
         // arg_is_right=false but functor seeks Right → should fail
         assert!(!check_application(f, a, false).is_valid());
     }
@@ -154,8 +154,8 @@ mod tests {
     #[test]
     fn mode_consistency_check() {
         let mut types = HashMap::new();
-        types.insert(1u64, ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right));
-        types.insert(2u64, ModalType::atom(ModalMode::Diamond, TypeCategory::Participant));
+        types.insert(1u64, ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right));
+        types.insert(2u64, ModalType::atom(ModalMode::Diamond, TypeCategory(6)));
         let edges = vec![(1u64, 2u64, ModalMode::Diamond, true)];
         let errors = check_mode_consistency(&types, &edges);
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);

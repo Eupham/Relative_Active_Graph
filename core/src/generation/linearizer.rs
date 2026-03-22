@@ -3,10 +3,19 @@
 //! in the target language. Language selected by TRD / query context.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory};
+use crate::types::{NodeId, EdgeId, TRDId, ModalType, ModalMode, TypeCategory};
 use crate::arg::{ArgGraph, ArgNode};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::generation::hypothesis::Hypothesis;
+
+/// One step in a sequential linearization: which node/edge produced which surface token.
+#[derive(Clone, Debug)]
+pub struct LinearizationStep {
+    pub step:     usize,
+    pub surface:  String,
+    pub node_id:  NodeId,
+    pub edge_id:  EdgeId,
+}
 
 /// Per-language lexicon entry.
 #[derive(Clone, Debug)]
@@ -103,6 +112,23 @@ impl Linearizer {
     pub fn lambda_to_surface(&self, semantics: &MtlgSemantics, term: LambdaTerm) -> String {
         let prop = semantics.sentence_level(term);
         self.proposition_to_surface(&prop)
+    }
+
+    /// Produce a sequence of `LinearizationStep`s from an ordered list of
+    /// `(node_id, edge_id, predicate)` triples.
+    ///
+    /// Used by the sequential trainer: each step corresponds to one teacher-forced token.
+    pub fn linearize_sequence(
+        &self,
+        steps: &[(NodeId, EdgeId, &str)],
+    ) -> Vec<LinearizationStep> {
+        steps.iter().enumerate().map(|(i, &(nid, eid, pred))| {
+            let surface = self.lexicon
+                .surface_for(pred, &self.language)
+                .unwrap_or(pred)
+                .to_string();
+            LinearizationStep { step: i, surface, node_id: nid, edge_id: eid }
+        }).collect()
     }
 }
 

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory, Direction};
-use crate::arg::{ArgGraph, ArgEdge, edge::EdgeType};
+use crate::arg::{ArgGraph, ArgEdge};
 use petgraph::visit::EdgeRef;
 
 /// Restriction map along one directed edge.
@@ -115,12 +115,12 @@ pub fn build_stalks(graph: &ArgGraph) -> HashMap<NodeId, ModalType> {
 mod tests {
     use super::*;
     use crate::types::{ModalMode, TypeCategory, ModalType, Direction};
-    use crate::arg::{ArgNode, NodeType, ArgEdge, EdgeType};
+    use crate::arg::{ArgNode, NodeClass, ArgEdge, EdgeClass};
     use crate::arg::search::ArgGraph;
     use petgraph::stable_graph::StableGraph;
 
     fn diamond_type() -> ModalType {
-        ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right)
+        ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right)
     }
 
     #[test]
@@ -129,17 +129,17 @@ mod tests {
         let u_type  = diamond_type();
         let applied = u_type.apply().unwrap();
 
-        let mut n_u = ArgNode::new(1, NodeType::Concept, u_type, (0,0));
-        let mut n_v = ArgNode::new(2, NodeType::Concept, applied, (0,0));
-        let mut n_w = ArgNode::new(3, NodeType::Concept, applied.apply().unwrap_or(applied), (0,0));
+        let mut n_u = ArgNode::new(1, NodeClass::DEFAULT, u_type, (0,0));
+        let mut n_v = ArgNode::new(2, NodeClass::DEFAULT, applied, (0,0));
+        let mut n_w = ArgNode::new(3, NodeClass::DEFAULT, applied.apply().unwrap_or(applied), (0,0));
         n_u.atms_label = 0b111; n_v.atms_label = 0b111; n_w.atms_label = 0b111;
 
         let u = g.add_node(n_u);
         let v = g.add_node(n_v);
         let w = g.add_node(n_w);
-        g.add_edge(u, v, ArgEdge::new(1, 1, 2, EdgeType::Composition, ModalMode::Diamond));
-        g.add_edge(v, w, ArgEdge::new(2, 2, 3, EdgeType::Composition, ModalMode::Diamond));
-        g.add_edge(u, w, ArgEdge::new(3, 1, 3, EdgeType::Composition, ModalMode::Diamond));
+        g.add_edge(u, v, ArgEdge::new(1, 1, 2, EdgeClass::DEFAULT, ModalMode::Diamond));
+        g.add_edge(v, w, ArgEdge::new(2, 2, 3, EdgeClass::DEFAULT, ModalMode::Diamond));
+        g.add_edge(u, w, ArgEdge::new(3, 1, 3, EdgeClass::DEFAULT, ModalMode::Diamond));
 
         let stalks = build_stalks(&g);
         let result = check_sheaf_coherence(&g, &stalks);

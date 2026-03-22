@@ -103,9 +103,9 @@ mod tests {
             id,
             name:       "test".into(),
             lhs_mode:   ModalMode::Diamond,
-            lhs_cat:    TypeCategory::Scene,
+            lhs_cat:    TypeCategory::DEFAULT,
             rhs_mode:   ModalMode::Diamond,
-            rhs_cat:    TypeCategory::Process,
+            rhs_cat:    TypeCategory(1),
             confidence,
             support:    10,
         }

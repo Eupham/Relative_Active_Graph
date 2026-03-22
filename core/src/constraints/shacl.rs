@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use crate::types::{NodeId, ModalMode};
-use crate::arg::{ArgGraph, node::NodeType, edge::EdgeType};
+use crate::arg::{ArgGraph};
 use petgraph::visit::EdgeRef;
 
 /// A shape constraint that ARG structures must satisfy.
@@ -16,8 +16,8 @@ pub struct ShapeConstraint {
 
 #[derive(Clone, Debug)]
 pub enum ConstraintKind {
-    /// Every node of `node_type` must have at least `min` outgoing edges of `edge_type`.
-    MinOutgoing { node_type: NodeType, edge_type: EdgeType, min: usize },
+    /// Every functor node (arity > 0) must have at least `min` outgoing edges.
+    FunctorsMustProject { min: usize },
     /// Every ◇-mode edge must connect nodes of compatible categories.
     DiamondModeCompatibility,
     /// □-mode edges must form a DAG (no cycles through sharing).
@@ -42,8 +42,8 @@ pub fn validate_shapes(
     let mut violations = Vec::new();
     for constraint in constraints {
         match &constraint.kind {
-            ConstraintKind::MinOutgoing { node_type, edge_type, min } => {
-                check_min_outgoing(graph, constraint.name.clone(), *node_type, *edge_type, *min, &mut violations);
+            ConstraintKind::FunctorsMustProject { min } => {
+                check_functors_project(graph, constraint.name.clone(), *min, &mut violations);
             }
             ConstraintKind::DiamondModeCompatibility => {
                 check_diamond_compatibility(graph, constraint.name.clone(), &mut violations);
@@ -59,25 +59,22 @@ pub fn validate_shapes(
     violations
 }
 
-fn check_min_outgoing(
+fn check_functors_project(
     graph: &ArgGraph,
     name: String,
-    required_node_type: NodeType,
-    required_edge_type: EdgeType,
     min: usize,
     violations: &mut Vec<ValidationViolation>,
 ) {
     for idx in graph.node_indices() {
         let node = &graph[idx];
-        if node.node_type != required_node_type { continue; }
-        let count = graph.edges(idx)
-            .filter(|e| e.weight().edge_type == required_edge_type)
-            .count();
-        if count < min {
+        if node.mtlg_type.arity == 0 { continue; }
+        let out = graph.edges(idx).count();
+        if out < min {
             violations.push(ValidationViolation {
                 constraint: name.clone(),
                 node_id:    Some(node.id),
-                message:    format!("node {} has {} {:?} edges, need ≥ {}", node.id, count, required_edge_type, min),
+                message:    format!("functor node {} (arity={}) has {} outgoing edges, min={}",
+                    node.id, node.mtlg_type.arity, out, min),
             });
         }
     }
@@ -99,7 +96,7 @@ fn check_diamond_compatibility(
                 violations.push(ValidationViolation {
                     constraint: name.clone(),
                     node_id:    Some(graph[e.source()].id),
-                    message:    format!("◇-edge from saturated node {:?}→{:?}", src_cat, dst_cat),
+                    message:    format!("◇-edge from saturated node {}→{}", src_cat, dst_cat),
                 });
             }
         }
@@ -111,7 +108,6 @@ fn check_box_acyclic(
     name: String,
     violations: &mut Vec<ValidationViolation>,
 ) {
-    // Simple cycle detection via DFS on □-mode edges only.
     use std::collections::HashSet;
     let mut visited   = HashSet::new();
     let mut rec_stack = HashSet::new();
@@ -156,7 +152,6 @@ fn check_roots_typed(
     name: String,
     violations: &mut Vec<ValidationViolation>,
 ) {
-    // A root has no incoming edges (in the directed graph).
     let has_incoming: std::collections::HashSet<_> = graph.edge_indices()
         .map(|ei| graph.edge_endpoints(ei).unwrap().1)
         .collect();
@@ -180,6 +175,10 @@ fn check_roots_typed(
 pub fn default_constraints() -> Vec<ShapeConstraint> {
     vec![
         ShapeConstraint {
+            name: "functors-project".into(),
+            kind: ConstraintKind::FunctorsMustProject { min: 1 },
+        },
+        ShapeConstraint {
             name: "diamond-compat".into(),
             kind: ConstraintKind::DiamondModeCompatibility,
         },
@@ -197,15 +196,15 @@ pub fn default_constraints() -> Vec<ShapeConstraint> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::{ArgNode, NodeType, ArgEdge, EdgeType};
+    use crate::arg::{ArgNode, NodeClass, ArgEdge, EdgeClass};
     use petgraph::stable_graph::StableGraph;
     use crate::types::{ModalType, ModalMode, TypeCategory};
 
     #[test]
     fn valid_graph_no_violations() {
         let mut g: ArgGraph = StableGraph::new();
-        let functor_type = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, crate::types::Direction::Right);
-        let mut n = ArgNode::new(1, NodeType::Concept, functor_type, (0, 0));
+        let functor_type = ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, crate::types::Direction::Right);
+        let mut n = ArgNode::new(1, NodeClass::DEFAULT, functor_type, (0, 0));
         n.surface = Some(b"test".to_vec());
         g.add_node(n);
         let violations = validate_shapes(&g, &default_constraints());

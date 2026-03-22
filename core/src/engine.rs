@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, ModalMode, TypeCategory, Direction, Env, Situation};
 use crate::atms::BaseAtms;
 use crate::arg::{
-    ContextStack, ArgGraph, ArgSearch, ArgNode, ArgEdge, NodeType, EdgeType,
+    ContextStack, ArgGraph, ArgSearch, ArgNode, ArgEdge, NodeClass, EdgeClass,
     transient_repr::{RepContent, Granularity},
     egraph_adapter::ArgEGraph,
     graphica_adapter::{GraphicaCache, build_key},
@@ -18,7 +18,8 @@ use crate::causal::CounterfactualReasoner;
 use crate::semantics::MtlgSemantics;
 use crate::rules::{RulerBridge, RuleLifecycleManager};
 use crate::feedback::{AttributionEngine, ProvenanceLog, apply_trace};
-use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult};
+use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult, VocabDistribution};
+use crate::feedback::update::{propagate_attribution_backward, apply_attribution};
 
 /// A query submitted to the engine.
 #[derive(Debug, Clone)]
@@ -60,41 +61,71 @@ pub struct QueryResult {
     pub quality:        Quality,
 }
 
+/// One step in a teacher-forcing training sequence.
+#[derive(Clone, Debug)]
+pub struct TokenStep {
+    /// The surface text of this token (for logging / hypothesis matching).
+    pub text:             String,
+    /// The expected edge ID that should be activated for this token.
+    pub expected_edge_id: EdgeId,
+    /// Node pool to use for this step's ARG expansion.
+    pub node_pool:        Vec<ArgNode>,
+    /// Edge pool to use for this step's ARG expansion.
+    pub edge_pool:        Vec<ArgEdge>,
+}
+
+/// Result of processing a full training sequence.
+#[derive(Debug)]
+pub struct SequenceTrainResult {
+    /// Number of TokenSteps processed.
+    pub steps_processed:  usize,
+    /// Sum of Quality values across all steps.
+    pub quality_sum:      f64,
+    /// Final Quality of the last step.
+    pub final_quality:    Quality,
+    /// Edge IDs that received attribution updates.
+    pub attributed_edges: Vec<EdgeId>,
+}
+
 /// The CSRRE Engine.
 pub struct Engine {
-    pub atms:          BaseAtms,
-    pub context_stack: ContextStack,
-    pub perf:          PerfRegistry,
-    pub thresholds:    ThresholdRegistry,
-    pub semantics:     MtlgSemantics,
-    pub egraph:        ArgEGraph,
-    pub graphica:      GraphicaCache,
-    pub attribution:   AttributionEngine,
-    pub provenance:    ProvenanceLog,
-    pub ruler:         RulerBridge,
+    pub atms:           BaseAtms,
+    pub context_stack:  ContextStack,
+    pub perf:           PerfRegistry,
+    pub thresholds:     ThresholdRegistry,
+    pub semantics:      MtlgSemantics,
+    pub egraph:         ArgEGraph,
+    pub graphica:       GraphicaCache,
+    pub attribution:    AttributionEngine,
+    pub provenance:     ProvenanceLog,
+    pub ruler:          RulerBridge,
     pub rule_lifecycle: RuleLifecycleManager,
     pub counterfactual: CounterfactualReasoner,
-    pub global_lexicon: HashMap<String, crate::generation::LexEntry>, // for testing injection
-    tr_counter:        u64,
+    tr_counter:         u64,
+    /// The last ARG graph produced by `execute` or `execute_sequence`.
+    pub last_graph:     Option<ArgGraph>,
+    /// Cached node pool from the last expansion (for replay / attribution).
+    pub node_pool_cache: Vec<ArgNode>,
 }
 
 impl Engine {
     pub fn new() -> Self {
         Self {
-            atms:           BaseAtms::new(),
-            context_stack:  ContextStack::new(),
-            perf:           PerfRegistry::new(0.25),
-            thresholds:     ThresholdRegistry::new(),
-            semantics:      MtlgSemantics::new(),
-            egraph:         ArgEGraph::new(),
-            graphica:       GraphicaCache::new(),
-            attribution:    AttributionEngine::new(42),
-            provenance:     ProvenanceLog::new(10_000),
-            ruler:          RulerBridge::new(),
-            rule_lifecycle: RuleLifecycleManager::new(),
-            counterfactual: CounterfactualReasoner::new(0b1, 42),
-            global_lexicon: HashMap::new(),
-            tr_counter:     0,
+            atms:            BaseAtms::new(),
+            context_stack:   ContextStack::new(),
+            perf:            PerfRegistry::new(0.25),
+            thresholds:      ThresholdRegistry::new(),
+            semantics:       MtlgSemantics::new(),
+            egraph:          ArgEGraph::new(),
+            graphica:        GraphicaCache::new(),
+            attribution:     AttributionEngine::new(42),
+            provenance:      ProvenanceLog::new(10_000),
+            ruler:           RulerBridge::new(),
+            rule_lifecycle:  RuleLifecycleManager::new(),
+            counterfactual:  CounterfactualReasoner::new(0b1, 42),
+            tr_counter:      0,
+            last_graph:      None,
+            node_pool_cache: Vec::new(),
         }
     }
 
@@ -153,9 +184,9 @@ impl Engine {
 
         // ── 9. Quality assessment (heuristic: satisfied + depth bonus) ────────
         let quality = if dr.satisfied {
-            if dr.depth_used == 0 { Quality::Good } else { Quality::Partial }
+            if dr.depth_used == 0 { Quality::GOOD } else { Quality::PARTIAL }
         } else {
-            Quality::Bad
+            Quality::BAD
         };
 
         // ── 10. Add TR to context ─────────────────────────────────────────────
@@ -172,7 +203,7 @@ impl Engine {
             for tr in &dissolved_trs {
                 // Apply attribution trace to ARG (in real system: graph would be mutable here).
                 // Record in ruler for rule induction.
-                self.ruler.observe_dissolved_tr(tr, quality == Quality::Good || quality == Quality::Partial);
+                self.ruler.observe_dissolved_tr(tr, quality.as_f32() >= Quality::PARTIAL.as_f32());
             }
         }
 
@@ -189,6 +220,96 @@ impl Engine {
 
         QueryResult { surface_output, satisfied: dr.satisfied, depth_used: dr.depth_used, quality }
     }
+
+    /// Execute a teacher-forcing training sequence.
+    ///
+    /// For each `TokenStep`, the engine:
+    /// 1. Expands the ARG from the step's node/edge pool.
+    /// 2. Builds a `VocabDistribution` (softmax over active nodes).
+    /// 3. Computes CE-based `Quality` against the expected edge.
+    /// 4. Applies attribution to edges involved in this step.
+    /// 5. Updates TRD performance and thresholds.
+    pub fn execute_sequence(
+        &mut self,
+        trd:      TRDId,
+        steps:    Vec<TokenStep>,
+        language: &str,
+    ) -> SequenceTrainResult {
+        let mut quality_sum      = 0.0f64;
+        let mut attributed_edges = Vec::new();
+        let mut final_quality    = Quality::BAD;
+        let n_steps              = steps.len();
+
+        let active_env = self.context_stack.current_env();
+        let theta_alpha = self.thresholds.theta_alpha(trd);
+        let theta_rho   = self.thresholds.theta_rho(trd);
+
+        for step in steps {
+            // Expand ARG for this token step.
+            let mut search = ArgSearch::new(active_env, theta_alpha, theta_rho);
+            for node in step.node_pool.iter().cloned() { search.try_activate(node); }
+            for edge in step.edge_pool.iter().cloned() { search.try_add_edge(edge); }
+
+            let graph = &search.graph;
+
+            // VocabDistribution: P(token | context).
+            let dist = VocabDistribution::from_graph(graph, active_env);
+
+            // CE quality: was the expected edge the top-scoring one?
+            let predicted_top = dist.probs.iter()
+                .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|&(_, eid, _)| eid)
+                .unwrap_or(0);
+            let was_correct = predicted_top == step.expected_edge_id;
+            let quality = dist.ce_quality(step.expected_edge_id, was_correct);
+
+            quality_sum   += quality.as_f64();
+            final_quality  = quality;
+
+            // Apply attribution to the expected edge.
+            let result = self.apply_attribution_batch(
+                vec![step.expected_edge_id],
+                quality,
+                trd,
+            );
+            attributed_edges.extend(result);
+
+            self.node_pool_cache = step.node_pool;
+        }
+
+        // Store the last built graph (re-build from cache for caller convenience).
+        // (In a full impl the graph would be retained across steps.)
+        self.last_graph = None;
+
+        // Update TRD performance.
+        self.perf.update(trd, final_quality);
+        self.thresholds.sync(&self.perf);
+
+        SequenceTrainResult {
+            steps_processed:  n_steps,
+            quality_sum,
+            final_quality,
+            attributed_edges,
+        }
+    }
+
+    /// Apply a batch of edge attribution updates for the given quality signal.
+    ///
+    /// Records each edge in the attribution engine and returns the list of
+    /// edge IDs that were updated.
+    pub fn apply_attribution_batch(
+        &mut self,
+        edge_ids: Vec<EdgeId>,
+        quality:  Quality,
+        trd_id:   TRDId,
+    ) -> Vec<EdgeId> {
+        self.tr_counter += 1;
+        let tr_id = self.tr_counter;
+        self.attribution.record(tr_id, trd_id, quality, &edge_ids);
+        // Also update the counterfactual reasoner.
+        self.counterfactual.record_dissolved_tr(tr_id, trd_id, quality, edge_ids.clone());
+        edge_ids
+    }
 }
 
 impl Default for Engine { fn default() -> Self { Self::new() } }
@@ -199,8 +320,8 @@ mod tests {
     use crate::arg::ArgNode;
 
     fn make_node(id: u64, surface: &str, score: f32) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept,
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right), (0, 0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT,
+            ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right), (0, 0));
         n.surface = Some(surface.as_bytes().to_vec());
         n.attribution_score = score;
         n.atms_label = 0b1;

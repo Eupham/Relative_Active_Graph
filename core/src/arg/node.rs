@@ -1,26 +1,19 @@
-//! ARG node (DOLCE Endurant — persistent across context changes).
-//! Nodes exist globally but activate only when their infon is supported by the current situation.
+//! ARG node. Structural role determined by position, arity, and attribution.
+//! NodeClass(u32) replaces NodeType named enum — class IDs assigned at bootstrap.
 
 use serde::{Deserialize, Serialize};
-use crate::types::{NodeId, Env, ModalType, Infon, TRDId, InfonId};
+use crate::types::{NodeId, Env, ModalType, TRDId, InfonId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum NodeType {
-    Atom,         // morpheme / subword token
-    Phrase,       // syntactic phrase
-    Concept,      // abstract concept
-    Frame,        // frame-semantic frame
-    DomainEntity, // domain-specific entity (code, API, etc.)
-    Rule,         // induced rewrite rule
+/// Discovered node class ID from bootstrap clustering. 0 = unclassified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct NodeClass(pub u32);
+
+impl NodeClass {
+    pub const DEFAULT: NodeClass = NodeClass(0);
+    pub fn is_assigned(self) -> bool { self.0 != 0 }
 }
 
-/// Depth is computed locally per G(s), not assigned globally.
-fn compute_depth(
-    path_density: f32,
-    attribution_score: f32,
-    type_arity: u8,
-    causal_parent_count: usize,
-) -> f32 {
+fn compute_depth(path_density: f32, attribution_score: f32, type_arity: u8, causal_parent_count: usize) -> f32 {
     let type_complexity = (type_arity as f32 + 1.0).ln();
     let causal_factor   = (causal_parent_count as f32 + 1.0).ln();
     (path_density * 0.4) + (attribution_score * 0.3) + (type_complexity * 0.2) + (causal_factor * 0.1)
@@ -28,60 +21,37 @@ fn compute_depth(
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ArgNode {
-    pub id:               NodeId,
-    pub node_type:        NodeType,
+    pub id:                NodeId,
+    pub node_class:        NodeClass,
     /// Language-agnostic surface bytes (UTF-8 string stored as bytes; None for abstract nodes).
-    pub surface:          Option<Vec<u8>>,
+    pub surface:           Option<Vec<u8>>,
     /// Activation infon: the (situation_id, infon_id) pair that triggers this node.
-    pub activation_infon: (u64, InfonId),
+    pub activation_infon:  (u64, InfonId),
     /// Singleton ATMS label for base layer.
-    pub atms_label:       Env,
+    pub atms_label:        Env,
     /// Locally inferred depth in G(s).
-    pub depth:            f32,
+    pub depth:             f32,
     /// Attribution score accumulated from dissolved TR traces.
     pub attribution_score: f32,
-    pub mtlg_type:        ModalType,
-    pub trd_membership:   Vec<TRDId>,
+    pub mtlg_type:         ModalType,
+    pub trd_membership:    Vec<TRDId>,
 }
 
 impl ArgNode {
-    pub fn new(
-        id: NodeId,
-        node_type: NodeType,
-        mtlg_type: ModalType,
-        activation_infon: (u64, InfonId),
-    ) -> Self {
+    pub fn new(id: NodeId, node_class: NodeClass, mtlg_type: ModalType, activation_infon: (u64, InfonId)) -> Self {
         Self {
-            id,
-            node_type,
-            surface:          None,
-            activation_infon,
-            atms_label:       0,
-            depth:            0.0,
-            attribution_score: 0.5, // prior
-            mtlg_type,
-            trd_membership:   Vec::new(),
+            id, node_class, surface: None, activation_infon,
+            atms_label: 0, depth: 0.0, attribution_score: 0.5,
+            mtlg_type, trd_membership: Vec::new(),
         }
     }
 
-    pub fn with_surface(mut self, bytes: Vec<u8>) -> Self {
-        self.surface = Some(bytes);
-        self
-    }
-
-    pub fn with_label(mut self, env: Env) -> Self {
-        self.atms_label = env;
-        self
-    }
+    pub fn with_surface(mut self, bytes: Vec<u8>) -> Self { self.surface = Some(bytes); self }
+    pub fn with_label(mut self, env: Env) -> Self { self.atms_label = env; self }
 
     /// Recompute depth given current context stats.
     pub fn update_depth(&mut self, path_density: f32, causal_parent_count: usize) {
-        self.depth = compute_depth(
-            path_density,
-            self.attribution_score,
-            self.mtlg_type.arity,
-            causal_parent_count,
-        );
+        self.depth = compute_depth(path_density, self.attribution_score, self.mtlg_type.arity, causal_parent_count);
     }
 
     /// True if this node is active in `active_env` given threshold `theta`.
@@ -101,8 +71,8 @@ mod tests {
     use crate::types::{ModalMode, TypeCategory};
 
     fn make_node(id: NodeId) -> ArgNode {
-        let mt = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
-        ArgNode::new(id, NodeType::Concept, mt, (0, 0))
+        let mt = ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT);
+        ArgNode::new(id, NodeClass::DEFAULT, mt, (0, 0))
             .with_surface(b"test".to_vec())
             .with_label(0b11)
     }

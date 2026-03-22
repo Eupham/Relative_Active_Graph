@@ -53,18 +53,18 @@ def graph_to_modal_vector(graph: MtlgGraph, vocab: list[str]) -> np.ndarray:
     """Convert a graph's modal type distribution to a fixed-size vector."""
     counts: Counter = Counter()
     for edge in graph.edges:
-        key = f"{edge.modal_mode}_{edge.ucca_cat}"
+        key = f"{edge.modal_mode}_{edge.category_id}"
         counts[key] += 1
     total = sum(counts.values()) or 1
     return np.array([counts.get(v, 0) / total for v in vocab], dtype=np.float32)
 
 
 def build_vocabulary(graphs: list[MtlgGraph]) -> list[str]:
-    """Build the modal-profile vocabulary from observed (mode, cat) pairs."""
+    """Build the modal-profile vocabulary from observed (mode, category_id) pairs."""
     keys: set = set()
     for g in graphs:
         for e in g.edges:
-            keys.add(f"{e.modal_mode}_{e.ucca_cat}")
+            keys.add(f"{e.modal_mode}_{e.category_id}")
     return sorted(keys)
 
 
@@ -148,7 +148,7 @@ class TrdBootstrapper:
             lemma_counter: Counter = Counter()
             for g in cg:
                 for node in g.nodes:
-                    if node.ucca_cat in ("Process", "Participant"):
+                    if node.category_id in (1, 6):  # Process=1, Participant=6
                         lemma_counter[node.lemma] += 1
             top_lemmas = [l for l, _ in lemma_counter.most_common(5)]
             trds.append(TrdEntry(

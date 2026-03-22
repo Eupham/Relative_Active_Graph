@@ -1,5 +1,5 @@
 //! Per-TRD performance tracking: P_d(t), σ²_d(t), σ²_max(d).
-//! EMA with β=0.9 over quality samples Q ∈ {0.0, 0.5, 1.0}.
+//! EMA with β=0.9 over quality samples Q ∈ [0.0, 1.0].
 
 use crate::types::{TRDId, Quality};
 
@@ -37,13 +37,10 @@ impl TrdPerf {
     /// Ingest a quality sample and update EMA stats.
     pub fn update(&mut self, quality: Quality) {
         let q = quality.as_f64();
-        // Update P_d(t)
         self.p_ema = BETA * self.p_ema + (1.0 - BETA) * q;
-        // Update σ²_d(t)
         let diff = q - self.p_ema;
         self.var_ema = BETA * self.var_ema + (1.0 - BETA) * diff * diff;
         self.n_samples += 1;
-        // After warmup: update σ²_max from live data.
         if self.n_samples >= N_WARMUP {
             self.var_max = self.var_max.max(self.var_ema);
         }
@@ -68,8 +65,8 @@ impl TrdPerf {
 
 /// Registry of per-TRD performance trackers.
 pub struct PerfRegistry {
-    trackers: std::collections::HashMap<TRDId, TrdPerf>,
-    global_var_prior: f64,
+    pub trackers: std::collections::HashMap<TRDId, TrdPerf>,
+    pub global_var_prior: f64,
 }
 
 impl PerfRegistry {
@@ -86,6 +83,20 @@ impl PerfRegistry {
         let prior = self.global_var_prior;
         self.trackers.entry(trd_id)
             .or_insert_with(|| TrdPerf::new(trd_id, prior))
+            .update(quality);
+    }
+
+    /// Record a positive quality signal on the TRD that *should* have been active.
+    ///
+    /// When the active TRD produces the wrong output and the correct token belongs
+    /// to a different TRD, this method rewards the correct TRD so its EMA improves,
+    /// its variance falls, and its threshold rises — making it more likely to be
+    /// selected in similar future contexts.
+    pub fn reward_correct_trd(&mut self, correct_trd: TRDId, quality: Quality) {
+        let prior = self.global_var_prior;
+        self.trackers
+            .entry(correct_trd)
+            .or_insert_with(|| TrdPerf::new(correct_trd, prior))
             .update(quality);
     }
 
@@ -110,7 +121,7 @@ mod tests {
     fn stable_after_good_samples() {
         let mut t = TrdPerf::new(0, 0.25);
         for _ in 0..50 {
-            t.update(Quality::Good);
+            t.update(Quality::GOOD);
         }
         assert!(t.is_stable());
         assert!(!t.is_noisy());
@@ -119,19 +130,17 @@ mod tests {
     #[test]
     fn noisy_after_mixed_samples() {
         let mut t = TrdPerf::new(0, 0.10);
-        // Feed maximum-variance sequence: alternating good/bad after warming up var_max
         for i in 0..50 {
-            t.update(if i % 2 == 0 { Quality::Good } else { Quality::Bad });
+            t.update(if i % 2 == 0 { Quality::GOOD } else { Quality::BAD });
         }
-        // var_ema should be relatively high; may or may not trigger is_noisy threshold
         assert!(t.var_ema > 0.0);
     }
 
     #[test]
     fn variance_ratio_in_bounds() {
         let mut t = TrdPerf::new(0, 0.25);
-        t.update(Quality::Bad);
-        t.update(Quality::Good);
+        t.update(Quality::BAD);
+        t.update(Quality::GOOD);
         let r = t.variance_ratio();
         assert!((0.0..=1.0).contains(&r));
     }

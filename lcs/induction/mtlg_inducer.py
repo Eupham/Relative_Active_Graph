@@ -27,11 +27,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LexTypeEntry:
-    modal_mode: str
-    ucca_cat:   str
-    arity:      int
-    count:      int = 0
-    log_prob:   float = 0.0
+    modal_mode:  str
+    category_id: int   # TypeCategory numeric ID (0=DEFAULT, 1-6 structural prototypes)
+    arity:       int
+    count:       int = 0
+    log_prob:    float = 0.0
 
 
 @dataclass
@@ -39,12 +39,12 @@ class PerLanguageLexicon:
     language: str
     entries:  dict[str, list[LexTypeEntry]] = field(default_factory=lambda: defaultdict(list))
 
-    def update(self, lemma: str, mode: str, cat: str, arity: int, weight: float = 1.0):
+    def update(self, lemma: str, mode: str, category_id: int, arity: int, weight: float = 1.0):
         for entry in self.entries[lemma]:
-            if entry.modal_mode == mode and entry.ucca_cat == cat and entry.arity == arity:
+            if entry.modal_mode == mode and entry.category_id == category_id and entry.arity == arity:
                 entry.count += weight
                 return
-        self.entries[lemma].append(LexTypeEntry(mode, cat, arity, count=weight))
+        self.entries[lemma].append(LexTypeEntry(mode, category_id, arity, count=weight))
 
     def normalize(self):
         """Compute log-probabilities from counts (MLE)."""
@@ -64,7 +64,7 @@ class PerLanguageLexicon:
     def to_dict(self) -> dict:
         return {
             lemma: [
-                {"modal_mode": e.modal_mode, "ucca_cat": e.ucca_cat,
+                {"modal_mode": e.modal_mode, "category_id": e.category_id,
                  "arity": e.arity, "count": e.count, "log_prob": e.log_prob}
                 for e in entries
             ]
@@ -82,7 +82,7 @@ class PerLanguageLexicon:
         for lemma, entries in data.items():
             for e in entries:
                 lex.entries[lemma].append(LexTypeEntry(
-                    e["modal_mode"], e["ucca_cat"], e["arity"],
+                    e["modal_mode"], e["category_id"], e["arity"],
                     count=e["count"], log_prob=e["log_prob"],
                 ))
         return lex
@@ -101,7 +101,7 @@ class MtlgInducer:
         for node in graph.nodes:
             # Weight by: arity > 0 gives more signal (functors)
             weight = 1.5 if node.arity > 0 else 1.0
-            self.lexicon.update(node.lemma, node.modal_mode, node.ucca_cat, node.arity, weight)
+            self.lexicon.update(node.lemma, node.modal_mode, node.category_id, node.arity, weight)
         self._trees_processed += 1
 
     def induce_from_stream(
@@ -130,7 +130,7 @@ class MtlgInducer:
             for node in graph.nodes:
                 total += 1
                 best = self.lexicon.best_type(node.lemma)
-                if best and best.modal_mode == node.modal_mode and best.ucca_cat == node.ucca_cat:
+                if best and best.modal_mode == node.modal_mode and best.category_id == node.category_id:
                     correct += 1
         return correct / total if total > 0 else 0.0
 
@@ -175,4 +175,4 @@ if __name__ == "__main__":
     top = sorted(lex.entries.items(), key=lambda kv: sum(e.count for e in kv[1]), reverse=True)[:5]
     for lemma, entries in top:
         best = max(entries, key=lambda e: e.count)
-        print(f"  {lemma}: mode={best.modal_mode} cat={best.ucca_cat} arity={best.arity} count={best.count:.0f}")
+        print(f"  {lemma}: mode={best.modal_mode} cat_id={best.category_id} arity={best.arity} count={best.count:.0f}")
