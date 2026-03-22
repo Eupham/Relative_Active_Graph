@@ -111,7 +111,6 @@ class SequentialTrainer:
             if not passage_buffer:
                 return
 
-            # Convert each sentence's TokenSequence to wire format.
             wire_sentences = []
             for seq in passage_buffer:
                 nodes = [bridge.make_node(
@@ -146,7 +145,7 @@ class SequentialTrainer:
             stats.quality_sum   += float(result.get("quality_sum", 0.0))
 
             passage_buffer.clear()
-            passage_chars = 0  # reset via nonlocal capture
+            passage_chars = 0
 
         seq_iter = stream_c4_sequences(
             language=self.config.language,

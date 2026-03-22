@@ -10,6 +10,7 @@ These artefacts are loaded by Rust's bootstrap_loader at training time.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, asdict
@@ -65,94 +66,53 @@ class BootstrapTrainer:
 
     def run(self, sentences: list[str]) -> BootstrapArtefacts:
         """
-        Full bootstrap from a list of raw sentences.
-
-        Steps:
-        1. Parse sentences with UD parser (stanza / spacy-dep).
-        2. Convert UD trees → MtlgGraph (structural evidence only).
-        3. Cluster deferred tokens via CategoryInducer.
-        4. Build TRD profiles from co-activation patterns.
-        5. Build edge vocab from surface tokens.
+        Full bootstrap from raw sentences.
+        No UD parser. No pretrained model.
         """
-        from .c4_sequence_extractor import parse_ud_trees
+        import sys, hashlib
+        from pathlib import Path as _Path
+        sys.path.insert(0, str(_Path(__file__).parent.parent / "induction"))
+        import numpy as np
+        from trd_bootstrap import (TrdBootstrapper, build_bigram_vocabulary,
+                                    _sentence_to_bigram_vector)
+        from c4_sequence_extractor import _sentence_to_sequence
 
-        logger.info("Bootstrap: parsing %d sentences", len(sentences))
-        ud_trees = parse_ud_trees(sentences)
+        logger.info("Bootstrap: processing %d sentences", len(sentences))
+        bootstrapper = TrdBootstrapper(n_clusters=self.n_clusters)
+        trds = bootstrapper.bootstrap(sentences, language="bootstrap")
 
-        # Import the Rust-side converter (via Python cffi or re-implementation).
-        # Here we use the Python re-implementation from lcs/induction.
-        try:
-            from lcs.induction.ud_to_mtlg import UdToMtlgConverter
-            converter = UdToMtlgConverter(n_clusters=self.n_clusters)
-            mtlg_graphs = [converter.convert(tree) for tree in ud_trees]
-            converter.resolve_deferred(mtlg_graphs)
-        except ImportError:
-            logger.warning("lcs.induction.ud_to_mtlg not available; using stub graphs")
-            mtlg_graphs = []
+        # Categories from cluster centroids.
+        if bootstrapper._model is not None and bootstrapper._model.centroids is not None:
+            for i, centroid in enumerate(bootstrapper._model.centroids):
+                self.artefacts.categories.append(CategoryRecord(
+                    id=i + 1,
+                    label=f"cluster_{i}",
+                    centroid=centroid.tolist() if hasattr(centroid, "tolist") else list(centroid),
+                    count=sum(1 for t in trds if t.trd_id == i),
+                ))
 
-        self._build_categories(converter if mtlg_graphs else None)
-        self._build_trd_profiles(mtlg_graphs)
-        self._build_edge_vocab(mtlg_graphs)
-        return self.artefacts
+        # TRD profiles from cluster bigram distributions.
+        for trd in trds:
+            type_counts: dict[str, int] = {}
+            for bigram, freq in trd.modal_profile.items():
+                cat_id = int(hashlib.sha256(bigram.encode()).hexdigest(), 16) % 65536
+                key = f"0,{cat_id}"
+                type_counts[key] = type_counts.get(key, 0) + int(freq * 1000)
+            self.artefacts.trd_profiles.append(TrdProfileRecord(
+                trd_id=trd.trd_id,
+                type_counts=type_counts,
+                total_tokens=trd.support,
+            ))
 
-    def _build_categories(self, converter: Any) -> None:
-        """Populate category records from cluster centroids.
-
-        All category IDs are opaque 1-based integers assigned by k-means.
-        No named prototypes are pre-seeded — the registry starts empty and
-        is populated entirely by BIC-guided clustering (self-supervised).
-        """
-        if converter is not None:
-            try:
-                inducer = converter.inducer
-                for c_idx, centroid in enumerate(inducer.centroids_):
-                    # IDs are 1-based; 0 is reserved for DEFAULT (unassigned).
-                    cat_id = c_idx + 1
-                    label  = f"cluster_{cat_id}"
-                    count  = int(inducer.counts_.get(c_idx, 0))
-                    self.artefacts.categories.append(CategoryRecord(
-                        id=cat_id,
-                        label=label,
-                        centroid=centroid.tolist(),
-                        count=count,
-                    ))
-            except AttributeError:
-                pass
-
-    def _build_trd_profiles(self, graphs: list) -> None:
-        """
-        Build TRD profiles: co-activation of (mode, category) pairs.
-
-        Simple heuristic: TRD ID = hash(dominant_category) % 8.
-        """
-        from collections import defaultdict
-        profiles: dict[int, TrdProfileRecord] = {}
-
-        for graph in graphs:
-            for node in getattr(graph, "nodes", []):
-                cat_id  = getattr(node, "category_id", 0)
-                mode_id = 0  # Diamond default
-                trd_id  = cat_id % 8
-                if trd_id not in profiles:
-                    profiles[trd_id] = TrdProfileRecord(
-                        trd_id=trd_id, type_counts={}, total_tokens=0
-                    )
-                key = f"{mode_id},{cat_id}"
-                profiles[trd_id].type_counts[key] = (
-                    profiles[trd_id].type_counts.get(key, 0) + 1
-                )
-                profiles[trd_id].total_tokens += 1
-
-        self.artefacts.trd_profiles = list(profiles.values())
-
-    def _build_edge_vocab(self, graphs: list) -> None:
-        """Map edge IDs to surface tokens."""
-        for graph in graphs:
-            for edge in getattr(graph, "edges", []):
-                eid  = self._next_edge_id
-                surf = getattr(edge, "surface", "") or ""
-                self.artefacts.edge_vocab[str(eid)] = surf
+        # Edge vocab from character sequences (first 500 sentences only).
+        for sentence in sentences[:500]:
+            seq = _sentence_to_sequence(sentence, trd_id=0)
+            for step in seq.steps:
+                eid = self._next_edge_id
+                self.artefacts.edge_vocab[str(eid)] = step.text
                 self._next_edge_id += 1
+
+        return self.artefacts
 
     # ── Serialization ─────────────────────────────────────────────────────────
 

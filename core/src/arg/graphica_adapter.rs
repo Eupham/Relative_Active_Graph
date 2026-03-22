@@ -7,13 +7,15 @@ use std::collections::hash_map::DefaultHasher;
 use crate::types::{NodeId, EdgeId, Env, CacheKey, ModalMode, TypeCategory};
 use crate::arg::{node::ArgNode, edge::ArgEdge};
 
-/// A cached derivation result.
+pub const MIN_SHORTCUT_TRAVERSALS: u32 = 10;
+
 #[derive(Clone, Debug)]
 pub struct CachedResult {
-    pub key:          CacheKey,
-    /// Attribution trace from the prior derivation (reuse avoids redundant computation).
-    pub edge_deltas:  HashMap<EdgeId, f32>,
-    pub quality:      f32,
+    pub key:                   CacheKey,
+    pub edge_deltas:           HashMap<EdgeId, f32>,
+    pub quality:               f32,
+    pub traversal_count:       u32,
+    pub shortcut_canonical_id: Option<u64>,
 }
 
 /// Compute the structural hash of a subgraph (nodes + edges by id, sorted).
@@ -69,9 +71,7 @@ pub struct GraphicaCache {
 }
 
 impl GraphicaCache {
-    pub fn new() -> Self {
-        Self { store: HashMap::new(), hits: 0, misses: 0 }
-    }
+    pub fn new() -> Self { Self { store: HashMap::new(), hits: 0, misses: 0 } }
 
     pub fn get(&mut self, key: &CacheKey) -> Option<&CachedResult> {
         match self.store.get(key) {
@@ -80,14 +80,41 @@ impl GraphicaCache {
         }
     }
 
-    pub fn insert(&mut self, result: CachedResult) {
-        self.store.insert(result.key, result);
+    pub fn record_traversal(&mut self, key: &CacheKey) -> u32 {
+        if let Some(r) = self.store.get_mut(key) { r.traversal_count += 1; r.traversal_count }
+        else { 0 }
+    }
+
+    pub fn insert(&mut self, result: CachedResult) { self.store.insert(result.key, result); }
+
+    /// Emit a shortcut edge once MIN_SHORTCUT_TRAVERSALS is reached.
+    /// Returns Some on the first eligible call, None thereafter (no duplicates).
+    pub fn try_emit_shortcut(
+        &mut self,
+        key:            &CacheKey,
+        src:            NodeId,
+        dst:            NodeId,
+        canonical_mode: crate::types::ModalMode,
+        path_weights:   &[f32],
+        next_edge_id:   EdgeId,
+    ) -> Option<crate::arg::edge::ArgEdge> {
+        use crate::arg::edge::{ArgEdge, EdgeClass};
+        use crate::arg::symbolica_adapter::normalize_path_weight;
+        let result = self.store.get_mut(key)?;
+        if result.traversal_count < MIN_SHORTCUT_TRAVERSALS { return None; }
+        if result.shortcut_canonical_id.is_some() { return None; }
+        let canonical_id = key.hash ^ (canonical_mode as u64).wrapping_mul(0x9e3779b97f4a7c15);
+        result.shortcut_canonical_id = Some(canonical_id);
+        let weight = normalize_path_weight(path_weights).clamp(0.01, 1.0);
+        let mut edge = ArgEdge::new(next_edge_id, src, dst, EdgeClass::DEFAULT, canonical_mode);
+        edge.weight       = weight;
+        edge.canonical_id = Some(canonical_id);
+        Some(edge)
     }
 
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
-        if total == 0 { return 0.0; }
-        self.hits as f64 / total as f64
+        if total == 0 { 0.0 } else { self.hits as f64 / total as f64 }
     }
 
     pub fn len(&self) -> usize { self.store.len() }
@@ -130,5 +157,25 @@ mod tests {
         let key_a = build_key(&nodes, &[], 0b01);
         let key_b = build_key(&nodes, &[], 0b10);
         assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn shortcut_emitted_after_threshold() {
+        use crate::types::ModalMode;
+        let n1 = make_node(1); let n2 = make_node(2); let e1 = make_edge(10, 1, 2);
+        let key = build_key(&[&n1, &n2], &[&e1], 0b11);
+        let mut cache = GraphicaCache::new();
+        cache.insert(CachedResult {
+            key, edge_deltas: Default::default(), quality: 0.8,
+            traversal_count: 0, shortcut_canonical_id: None,
+        });
+        for _ in 0..9 {
+            cache.record_traversal(&key);
+            assert!(cache.try_emit_shortcut(&key, 1, 2, ModalMode::Diamond, &[0.8], 99).is_none());
+        }
+        cache.record_traversal(&key);
+        let sc = cache.try_emit_shortcut(&key, 1, 2, ModalMode::Diamond, &[0.8], 99);
+        assert!(sc.is_some() && sc.unwrap().canonical_id.is_some());
+        assert!(cache.try_emit_shortcut(&key, 1, 2, ModalMode::Diamond, &[0.8], 100).is_none());
     }
 }

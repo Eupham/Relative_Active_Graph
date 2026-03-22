@@ -125,6 +125,31 @@ impl Default for AlgebraicNormalizer {
     fn default() -> Self { Self::new() }
 }
 
+// ── Path weight normalization ─────────────────────────────────────────────────
+
+/// Harmonic mean of constituent edge weights for a shortcut edge.
+/// Penalizes weak links: a path [1.0, 1.0, 0.1] returns ~0.25.
+pub fn normalize_path_weight(weights: &[f32]) -> f32 {
+    if weights.is_empty() { return 0.0; }
+    let n = weights.len() as f32;
+    let sum_recip: f32 = weights.iter()
+        .map(|&w| if w > 1e-9 { 1.0 / w } else { f32::MAX })
+        .sum();
+    if sum_recip == 0.0 || sum_recip.is_infinite() { return 0.0; }
+    n / sum_recip
+}
+
+/// Apply a named algebraic transform to `weight` via the normalizer,
+/// or return `weight` unchanged if no matching transform is registered.
+/// Called by `lifting.rs` when a ModalLiftingRule has algebraic_transform set.
+pub fn apply_named_transform(
+    normalizer: &AlgebraicNormalizer,
+    name:       &str,
+    weight:     f32,
+) -> f32 {
+    normalizer.normalize(name, weight as f64).map(|v| v as f32).unwrap_or(weight)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +170,20 @@ mod tests {
     fn normalize_mul_by_zero() {
         let expr = AlgExpr::Mul(Box::new(AlgExpr::Num(0.0)), Box::new(AlgExpr::Var("x".into())));
         assert_eq!(expr.normalize(), AlgExpr::Num(0.0));
+    }
+
+    #[test]
+    fn harmonic_mean_penalizes_weak_link() {
+        let w = normalize_path_weight(&[1.0, 1.0, 0.1]);
+        assert!(w < 0.3, "got {w}");
+    }
+    #[test]
+    fn harmonic_mean_uniform() {
+        let w = normalize_path_weight(&[0.8, 0.8, 0.8]);
+        assert!((w - 0.8).abs() < 1e-5, "got {w}");
+    }
+    #[test]
+    fn empty_path_is_zero() {
+        assert_eq!(normalize_path_weight(&[]), 0.0);
     }
 }

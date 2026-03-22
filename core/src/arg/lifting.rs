@@ -52,6 +52,19 @@ impl ModalLiftingRule {
             None
         }
     }
+
+    pub fn apply_weight(
+        &self,
+        normalizer: &crate::arg::symbolica_adapter::AlgebraicNormalizer,
+        weight: f32,
+    ) -> f32 {
+        match &self.algebraic_transform {
+            Some(name) => crate::arg::symbolica_adapter::apply_named_transform(
+                normalizer, name, weight,
+            ),
+            None => weight,
+        }
+    }
 }
 
 /// Registry of lifting rules indexed by (source_context, target_context).
@@ -92,6 +105,26 @@ impl LiftingRuleRegistry {
             }
         }
         None // No matching rule → TR should be dissolved
+    }
+
+    /// Lift a TR and return the algebraic weight scale for the matched rule.
+    /// Used by the engine when shortcut materialization is active.
+    /// Returns Some((new_type, weight_scale)) on match, None if dissolved.
+    pub fn lift_tr_with_weight(
+        &self,
+        tr:         &Tr,
+        from_ctx:   ContextId,
+        to_ctx:     ContextId,
+        normalizer: &crate::arg::symbolica_adapter::AlgebraicNormalizer,
+    ) -> Option<(ModalType, f32)> {
+        let rules = self.rules.get(&(from_ctx, to_ctx))
+            .map(|v| v.as_slice()).unwrap_or(&[]);
+        for rule in rules.iter().chain(self.default_rules.iter()) {
+            if let Some(new_type) = rule.apply(tr.mtlg_type) {
+                return Some((new_type, rule.apply_weight(normalizer, 1.0)));
+            }
+        }
+        None
     }
 }
 

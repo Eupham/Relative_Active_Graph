@@ -1,119 +1,70 @@
-//! Universal Dependencies token and tree types.
+//! Character-sequence token and sequence types for the LCS pipeline.
 //!
-//! These mirror the UD CoNLL-U format. The UPOS field is stored verbatim for
-//! auditability but is never used in classification logic — it is hashed to an
-//! opaque integer in the converter and treated as an anonymous feature there.
+//! Replaces the UD CoNLL-U types. The vocabulary is now Unicode code points.
+//! Structural roles are discovered by the CategoryInducer, not assigned by
+//! a parser.
 
-use std::collections::HashMap;
+// ── Hash utilities ────────────────────────────────────────────────────────────
 
-// ── Dependency relation utilities ─────────────────────────────────────────────
-
-/// FNV-1a hash of a deprel string. Produces an opaque u32 feature ID.
-///
-/// Used to convert UD relation strings into numeric feature dimensions
-/// without embedding any linguistic theory about what the relation means.
-/// The inducer learns which deprel patterns cluster together from data.
-pub fn deprel_hash(deprel: &str) -> u32 {
+/// FNV-1a hash of an arbitrary string slice to a stable u32.
+/// Retained for bootstrap artefact compatibility.
+pub fn deprel_hash(s: &str) -> u32 {
     const OFFSET: u32 = 0x811c_9dc5;
     const PRIME:  u32 = 0x0100_0193;
-    deprel.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u32)
+    s.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u32)
 }
 
-/// Long-range / extracted dependencies → ◊ (Lozenge) modal mode.
-///
-/// Used for modal mode assignment (structural bookkeeping), not category scoring.
+/// Returns true for UD relation strings that indicate long-range extraction.
+/// Retained for bootstrap artefact compatibility; not used in the
+/// character-level training path.
 pub fn is_long_range(deprel: &str) -> bool {
     matches!(deprel, "acl:relcl" | "nsubj:outer" | "obj:outer")
 }
 
-/// Enhanced UD relations that indicate shared arguments → □ (Box) mode.
-const REENTRANT_RELATIONS: &[&str] = &["nsubj:outer", "obj:outer", "nsubj:xsubj"];
+// ── Character token ───────────────────────────────────────────────────────────
 
-// ── Token ─────────────────────────────────────────────────────────────────────
-
-/// A single token from a UD CoNLL-U parse.
-///
-/// `upos` is stored verbatim for serialization and auditability.
-/// It is hashed to an opaque integer in [`crate::lcs::converter`] and never
-/// used in any named comparison within the classification pipeline.
+/// A single Unicode code point in a character sequence.
 #[derive(Clone, Debug)]
-pub struct UdToken {
-    pub id:     u32,
-    pub text:   String,
-    pub lemma:  String,
-    /// Universal POS tag — stored but never string-compared in scoring.
-    pub upos:   String,
-    pub xpos:   String,
-    /// Head token ID; 0 means this token is (or attached to) the root.
-    pub head:   u32,
-    pub deprel: String,
-    /// Enhanced dependencies string (CoNLL-U `deps` column), used only to
-    /// detect reentrancy.
-    pub deps:   String,
-    /// Morphological features as key → value pairs (e.g. `"Number" → "Sing"`).
-    pub feats:  HashMap<String, String>,
+pub struct CharToken {
+    /// Sequential position (1-indexed).
+    pub id:        u32,
+    /// The character as a UTF-8 string.
+    pub text:      String,
+    /// Unicode scalar value.
+    pub codepoint: u32,
 }
 
-impl UdToken {
-    pub fn new(
-        id:     u32,
-        text:   impl Into<String>,
-        lemma:  impl Into<String>,
-        upos:   impl Into<String>,
-        xpos:   impl Into<String>,
-        head:   u32,
-        deprel: impl Into<String>,
-    ) -> Self {
-        Self {
-            id,
-            text:   text.into(),
-            lemma:  lemma.into(),
-            upos:   upos.into(),
-            xpos:   xpos.into(),
-            head,
-            deprel: deprel.into(),
-            deps:   String::new(),
-            feats:  HashMap::new(),
-        }
+impl CharToken {
+    pub fn new(id: u32, ch: char) -> Self {
+        Self { id, text: ch.to_string(), codepoint: ch as u32 }
     }
 
-    /// True when this token is the syntactic root of its sentence.
-    pub fn is_root(&self) -> bool {
-        self.deprel == "root"
-    }
-
-    /// True when the token participates in an enhanced-UD shared argument
-    /// relation → UD □ (Box) mode.
-    pub fn is_reentrant(&self) -> bool {
-        REENTRANT_RELATIONS.iter().any(|r| self.deps.contains(r))
+    pub fn char(&self) -> char {
+        char::from_u32(self.codepoint).unwrap_or('\u{FFFD}')
     }
 }
 
-// ── Tree ──────────────────────────────────────────────────────────────────────
+// ── Character sequence ────────────────────────────────────────────────────────
 
-/// A sentence parsed into a UD dependency tree.
+/// A sentence decomposed into Unicode code points.
+/// Replaces UdTree as the input to the LCS converter.
 #[derive(Clone, Debug)]
-pub struct UdTree {
-    pub tokens:   Vec<UdToken>,
+pub struct CharSequence {
+    pub tokens:   Vec<CharToken>,
     pub language: String,
     pub text:     String,
 }
 
-impl UdTree {
-    pub fn new(tokens: Vec<UdToken>, language: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { tokens, language: language.into(), text: text.into() }
+impl CharSequence {
+    pub fn from_str(text: &str, language: impl Into<String>) -> Self {
+        let tokens = text.chars().enumerate()
+            .map(|(i, ch)| CharToken::new(i as u32 + 1, ch))
+            .collect();
+        Self { tokens, language: language.into(), text: text.to_string() }
     }
 
-    pub fn token_by_id(&self, id: u32) -> Option<&UdToken> {
+    pub fn token_by_id(&self, id: u32) -> Option<&CharToken> {
         self.tokens.iter().find(|t| t.id == id)
-    }
-
-    pub fn dependents_of(&self, head_id: u32) -> Vec<&UdToken> {
-        self.tokens.iter().filter(|t| t.head == head_id).collect()
-    }
-
-    pub fn root_tokens(&self) -> Vec<&UdToken> {
-        self.tokens.iter().filter(|t| t.is_root()).collect()
     }
 }
 
@@ -121,54 +72,24 @@ impl UdTree {
 mod tests {
     use super::*;
 
-    fn simple_tree() -> UdTree {
-        UdTree::new(
-            vec![
-                UdToken::new(1, "Alice", "Alice", "PROPN", "NNP", 2, "nsubj"),
-                UdToken::new(2, "runs",  "run",   "VERB",  "VBZ", 0, "root"),
-                UdToken::new(3, "quickly", "quickly", "ADV", "RB", 2, "advmod"),
-            ],
-            "en",
-            "Alice runs quickly.",
-        )
+    #[test]
+    fn char_sequence_from_str() {
+        let seq = CharSequence::from_str("abc", "en");
+        assert_eq!(seq.tokens.len(), 3);
+        assert_eq!(seq.tokens[0].text, "a");
+        assert_eq!(seq.tokens[2].codepoint, 'c' as u32);
     }
 
     #[test]
-    fn token_by_id() {
-        let tree = simple_tree();
-        assert_eq!(tree.token_by_id(2).map(|t| t.text.as_str()), Some("runs"));
-        assert!(tree.token_by_id(99).is_none());
+    fn char_token_roundtrip_cjk() {
+        let tok = CharToken::new(1, '가');
+        assert_eq!(tok.char(), '가');
+        assert_eq!(tok.text, "가");
     }
 
     #[test]
-    fn dependents_of() {
-        let tree = simple_tree();
-        let deps = tree.dependents_of(2);
-        assert_eq!(deps.len(), 2); // nsubj + advmod
-    }
-
-    #[test]
-    fn root_detection() {
-        let tree = simple_tree();
-        let roots = tree.root_tokens();
-        assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0].text, "runs");
-    }
-
-    #[test]
-    fn deprel_hash_stable_and_distinct() {
-        // Same input always produces same hash.
+    fn deprel_hash_stable() {
         assert_eq!(deprel_hash("nsubj"), deprel_hash("nsubj"));
-        // Distinct inputs produce distinct hashes.
         assert_ne!(deprel_hash("nsubj"), deprel_hash("obj"));
-        assert_ne!(deprel_hash("root"), deprel_hash("dep"));
-    }
-
-    #[test]
-    fn long_range_detection() {
-        assert!(is_long_range("acl:relcl"));
-        assert!(is_long_range("nsubj:outer"));
-        assert!(!is_long_range("nsubj"));
-        assert!(!is_long_range("obj"));
     }
 }

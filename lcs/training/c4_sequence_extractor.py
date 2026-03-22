@@ -1,190 +1,97 @@
 """
-c4_sequence_extractor.py — Extract token sequences from mC4 for self-supervised
-teacher forcing.
+c4_sequence_extractor.py — Extract UTF-8 character sequences from mC4 for
+self-supervised teacher forcing.
 
-Streams the mC4 dataset, runs UD parsing, and produces (sentence, ud_tree) pairs
-suitable for the sequential trainer. Integrates with the existing mc4_stream.py.
+Streams mC4, splits each sentence into Unicode code points, and produces
+TokenSequence objects. Every character is its own token. No parser, no
+lemmatizer, no pretrained model.
 
-This module implements self-supervised teacher forcing (as in GPT pre-training):
-the text provides its own labels via _stable_node_id(lemma).  No external
-supervision or hard-coded grammar rules are used.
+node_id == expected_node_id == _stable_node_id(char) for every step.
+This is the invariant the engine requires: the node in the pool must have
+the same id as the teacher-forcing target, or ce_quality_split returns 0
+on every step.
+
+Boundary and word-level structure emerge from the training signal:
+- Edge attribution weights converge on PMI (Harris successor variety).
+- VDBE threshold drops at high-entropy (boundary) positions.
+- GraphicaCache encodes MDL compression of stable character motifs.
+- Sheaf coherence violations mark modal type discontinuities at boundaries.
+- ATMS justification chains compress recurring character sequences.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional
+from dataclasses import dataclass
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 
-# ── UD stub types (used when stanza is unavailable) ──────────────────────────
-
-@dataclass
-class StubToken:
-    id: int
-    text: str
-    lemma: str
-    upos: str
-    head: int
-    deprel: str
-    feats: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
-class StubTree:
-    tokens: list[StubToken]
-    language: str
-    text: str
-
-    def token_by_id(self, tid: int) -> Optional[StubToken]:
-        return next((t for t in self.tokens if t.id == tid), None)
-
-
-# ── UD parsing ────────────────────────────────────────────────────────────────
-
-def parse_ud_trees(
-    sentences: list[str],
-    language: str = "en",
-    use_stanza: bool = True,
-) -> list[Any]:
+def _stable_node_id(char: str) -> int:
     """
-    Parse sentences into UD trees.
+    Stable 48-bit hash of a Unicode code point used as NodeId in the ARG.
 
-    Tries stanza first; falls back to stub single-token trees when unavailable.
+    The same character always maps to the same NodeId regardless of position,
+    language, or passage. This is the vocabulary identity.
     """
-    if use_stanza:
-        try:
-            return _parse_with_stanza(sentences, language)
-        except Exception as exc:
-            logger.warning("stanza unavailable (%s), using stub trees", exc)
-
-    return [_stub_tree(s, language) for s in sentences]
-
-
-def _parse_with_stanza(sentences: list[str], language: str) -> list[Any]:
-    import stanza
-    nlp = stanza.Pipeline(lang=language, processors="tokenize,pos,lemma,depparse")
-    trees = []
-    for sent in sentences:
-        doc = nlp(sent)
-        for sentence in doc.sentences:
-            tokens = []
-            for word in sentence.words:
-                tokens.append(StubToken(
-                    id=word.id,
-                    text=word.text,
-                    lemma=word.lemma or word.text,
-                    upos=word.upos or "X",
-                    head=word.head,
-                    deprel=word.deprel or "dep",
-                    feats={},
-                ))
-            trees.append(StubTree(tokens=tokens, language=language, text=sentence.text))
-    return trees
-
-
-def _stub_tree(text: str, language: str) -> StubTree:
-    """Create a single-root stub tree for a sentence."""
-    words = text.strip().split()
-    tokens = [
-        StubToken(
-            id=i + 1,
-            text=w,
-            lemma=w.lower(),
-            upos="X",
-            head=0 if i == 0 else 1,
-            deprel="root" if i == 0 else "dep",
-        )
-        for i, w in enumerate(words)
-    ]
-    return StubTree(tokens=tokens, language=language, text=text)
-
-
-# ── Sequence extraction ───────────────────────────────────────────────────────
-
-@dataclass
-class TokenSequence:
-    """One training example: a sentence broken into teacher-forcing steps."""
-    sentence: str
-    trd_id:   int
-    steps: list["TokenSequenceStep"]
+    return int(hashlib.sha256(char.encode("utf-8")).hexdigest(), 16) & 0xFFFFFFFFFFFF
 
 
 @dataclass
 class TokenSequenceStep:
-    text:             str
-    lemma:            str
-    expected_node_id: int   # stable hash of lemma (replaces expected_edge_id)
-    node_id:          int
-    deprel_hash:      int   # hash of raw deprel string — no category assignment
-    upos_hash:        int   # hash of UPOS tag — no hard mapping
+    text:             str    # the character itself
+    lemma:            str    # == text (character IS its own identity)
+    node_id:          int    # == expected_node_id (fixes the positional-vs-hash bug)
+    expected_node_id: int    # stable hash of the character
+    deprel_hash:      int    # 0 — CategoryInducer learns structure from context
+    upos_hash:        int    # 0 — CategoryInducer learns structure from context
 
 
-def _stable_node_id(lemma: str) -> int:
-    """Stable 48-bit hash of lemma used as NodeId in the ARG."""
-    return int(hashlib.sha256(lemma.encode()).hexdigest(), 16) & 0xFFFFFFFFFFFF
+@dataclass
+class TokenSequence:
+    """One training example: a sentence broken into character-level steps."""
+    sentence: str
+    trd_id:   int
+    steps:    list[TokenSequenceStep]
 
 
-def _hash_str(s: str) -> int:
-    return int(hashlib.sha256(s.encode()).hexdigest(), 16) & 0xFFFF
-
-
-def extract_sequence(
-    tree: Any,
-    trd_id: int,
-    base_edge_id: int = 1,
-) -> TokenSequence:
+def _sentence_to_sequence(sentence: str, trd_id: int) -> TokenSequence:
     """
-    Convert a UD tree into a `TokenSequence` for teacher forcing.
-
-    Each token becomes one step. The expected_node_id is a stable hash of the
-    token's lemma. No hard category labels are assigned — structural hashes
-    (deprel_hash, upos_hash) are provided for post-hoc clustering by the
-    CategoryInducer in the Rust engine.
+    Convert a sentence string to a TokenSequence by splitting on Unicode
+    code points. node_id == expected_node_id so the engine finds the node
+    in the pool and computes a meaningful CE signal.
     """
     steps = []
-    for tok in getattr(tree, "tokens", []):
-        lemma = getattr(tok, "lemma", tok.text.lower())
+    for ch in sentence:  # iterates Unicode code points, not bytes
+        nid = _stable_node_id(ch)
         steps.append(TokenSequenceStep(
-            text=tok.text,
-            lemma=lemma,
-            expected_node_id=_stable_node_id(lemma),
-            node_id=tok.id,
-            deprel_hash=_hash_str(getattr(tok, "deprel", "dep")),
-            upos_hash=_hash_str(getattr(tok, "upos", "X")),
+            text=ch,
+            lemma=ch,
+            node_id=nid,
+            expected_node_id=nid,
+            deprel_hash=0,
+            upos_hash=0,
         ))
-    return TokenSequence(
-        sentence=getattr(tree, "text", ""),
-        trd_id=trd_id,
-        steps=steps,
-    )
+    return TokenSequence(sentence=sentence, trd_id=trd_id, steps=steps)
 
 
 def stream_c4_sequences(
-    language: str = "en",
+    language:        str = "en",
     trd_assignments: Optional[dict[str, int]] = None,
-    max_sentences: int = 10_000,
-    use_stanza: bool = True,
+    max_sentences:   int = 10_000,
 ) -> Iterator[TokenSequence]:
     """
-    Stream self-supervised teacher-forcing sequences from mC4 via mc4_stream.py.
+    Stream self-supervised teacher-forcing sequences from mC4.
 
-    Each token in the stream provides its own label via `_stable_node_id(lemma)`,
-    following the self-supervised teacher-forcing paradigm (as in GPT pre-training).
-
-    `trd_assignments`: maps sentence hash → TRD ID (optional; defaults to 0).
-    `use_stanza`: when True (default), run the full Stanza UD pipeline for
-        structural features.  When False, use the stub flat-tree fallback
-        (for offline tests only; stub trees provide no deprel structure for
-        the inducer to work with).
+    Each Unicode code point provides its own label via _stable_node_id(char).
+    No external supervision. No parser. No model.
     """
     try:
         import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent / "induction"))
-        from mc4_stream import stream_mc4
+        from mc4_stream import stream_mc4, _split_sentences
     except ImportError:
         logger.warning("mc4_stream not available; yielding empty sequence stream")
         return
@@ -196,25 +103,13 @@ def stream_c4_sequences(
         text = item.get("text", "")
         if not text.strip():
             continue
-        for sentence_text in _split_sentences(text):
+        for sentence in _split_sentences(text):
             if count >= max_sentences:
                 break
+            if not sentence.strip():
+                continue
             trd_id = 0
             if trd_assignments:
-                key = sentence_text[:32]
-                trd_id = trd_assignments.get(key, 0)
-            # Use full Stanza UD pipeline for structural deprel features.
-            trees = parse_ud_trees([sentence_text], language=language, use_stanza=use_stanza)
-            for tree in trees:
-                seq = extract_sequence(tree, trd_id=trd_id)
-                yield seq
-                count += 1
-                if count >= max_sentences:
-                    break
-
-
-def _split_sentences(text: str, max_len: int = 200) -> list[str]:
-    """Naive sentence splitter (no stanza dependency)."""
-    import re
-    raw = re.split(r"(?<=[.!?])\s+", text)
-    return [s.strip() for s in raw if s.strip() and len(s) <= max_len]
+                trd_id = trd_assignments.get(sentence[:32], 0)
+            yield _sentence_to_sequence(sentence, trd_id)
+            count += 1
