@@ -25,13 +25,23 @@ def build_cli_query(sentence: str, situation_id: int) -> dict:
     # 3. Format as a wire message for the Rust engine
     wire_nodes = []
     for n in graph.nodes:
-        # The Rust engine expects numeric category ID.
+        # Convert numeric category ID back to string if needed by rust, or use numbers.
+        # Assuming we need strings based on the original error.
+        category_map = {
+            0: "scene",
+            1: "process",
+            2: "connector",
+            3: "ground",
+            4: "adverbial",
+            5: "state",
+            6: "participant"
+        }
         wire_nodes.append({
             "id": n.token_id,
             "surface": n.text,
             "score": 0.9, # Mock high attribution
             "mode": n.modal_mode,
-            "cat": n.category_id,
+            "cat": category_map.get(n.category_id, "scene"),
             "arity": n.arity
         })
 
@@ -105,7 +115,6 @@ def main():
     stdout, stderr = cli_process.communicate(payloads_str)
 
     if stderr:
-        print("STDERR:", stderr)
         pass # Ignore rust logs for clean output unless needed
 
     if not stdout:
