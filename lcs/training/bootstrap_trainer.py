@@ -19,16 +19,8 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 
-# ── Structural prototype labels (mirror Rust constants) ──────────────────────
-
-PROTOTYPE_LABELS = {
-    1: "Process",
-    2: "Connector",
-    3: "Ground",
-    4: "Adverbial",
-    5: "State",
-    6: "Participant",
-}
+# No hard-coded prototype labels: all category IDs are opaque u32 values
+# assigned by the BIC-guided k-means bootstrap.  None carry linguistic names.
 
 
 @dataclass
@@ -104,22 +96,22 @@ class BootstrapTrainer:
         return self.artefacts
 
     def _build_categories(self, converter: Any) -> None:
-        """Populate category records from cluster centroids."""
-        # Structural prototypes (fixed IDs 1–6).
-        for pid, label in PROTOTYPE_LABELS.items():
-            self.artefacts.categories.append(CategoryRecord(
-                id=pid, label=label, centroid=[], count=0
-            ))
+        """Populate category records from cluster centroids.
 
-        # Discovered clusters from CategoryInducer.
+        All category IDs are opaque 1-based integers assigned by k-means.
+        No named prototypes are pre-seeded — the registry starts empty and
+        is populated entirely by BIC-guided clustering (self-supervised).
+        """
         if converter is not None:
             try:
                 inducer = converter.inducer
                 for c_idx, centroid in enumerate(inducer.centroids_):
-                    label = f"cluster_{c_idx + 7}"
-                    count = int(inducer.counts_.get(c_idx, 0))
+                    # IDs are 1-based; 0 is reserved for DEFAULT (unassigned).
+                    cat_id = c_idx + 1
+                    label  = f"cluster_{cat_id}"
+                    count  = int(inducer.counts_.get(c_idx, 0))
                     self.artefacts.categories.append(CategoryRecord(
-                        id=c_idx + 7,
+                        id=cat_id,
                         label=label,
                         centroid=centroid.tolist(),
                         count=count,

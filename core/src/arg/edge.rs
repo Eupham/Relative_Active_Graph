@@ -9,7 +9,12 @@ use crate::types::{NodeId, EdgeId, Env, ModalMode};
 pub struct EdgeClass(pub u32);
 
 impl EdgeClass {
-    pub const DEFAULT: EdgeClass = EdgeClass(0);
+    pub const DEFAULT:    EdgeClass = EdgeClass(0);
+    /// Sequential bigram transition edge: token[t-1] → token[t].
+    /// Learns positional ordering from CE signal identically to structural edges.
+    pub const SEQUENTIAL: EdgeClass = EdgeClass(1);
+    /// Synonym edge: two surface forms that occupy structurally identical slots.
+    pub const SYNONYM:    EdgeClass = EdgeClass(2);
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

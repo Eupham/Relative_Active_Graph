@@ -63,10 +63,21 @@ impl PerLanguageLexicon {
     }
 }
 
+/// Response mode for the linearizer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinearizationMode {
+    /// Standard proposition-to-surface linearization.
+    Default,
+    /// Format: "Another word for '{query}' is '{result}'."
+    /// Used by `Engine::synonym_query` to produce natural-language answers.
+    SynonymResponse { query: String },
+}
+
 /// The linearizer: converts a Hypothesis to a surface string.
 pub struct Linearizer {
     pub lexicon:  PerLanguageLexicon,
     pub language: String,
+    pub mode:     LinearizationMode,
 }
 
 impl Linearizer {
@@ -75,12 +86,44 @@ impl Linearizer {
         Self {
             lexicon:  PerLanguageLexicon::new(lang.clone()),
             language: lang,
+            mode:     LinearizationMode::Default,
+        }
+    }
+
+    /// Create a linearizer in synonym-response mode for Q&A output.
+    pub fn synonym_response(language: impl Into<String>, query: impl Into<String>) -> Self {
+        let lang = language.into();
+        Self {
+            lexicon:  PerLanguageLexicon::new(lang.clone()),
+            language: lang,
+            mode:     LinearizationMode::SynonymResponse { query: query.into() },
+        }
+    }
+
+    /// Format synonym query results as a natural-language response.
+    ///
+    /// Takes the first result from `synonym_query` and formats it as:
+    /// "Another word for '{query}' is '{result}'."
+    pub fn format_synonym_response(query: &str, results: &[(String, f32)]) -> String {
+        match results.first() {
+            Some((result, _)) => format!("Another word for '{}' is '{}'.", query, result),
+            None              => format!("No synonym found for '{}'.", query),
         }
     }
 
     /// Linearize a hypothesis into a surface string in the target language.
     pub fn linearize(&self, hyp: &Hypothesis) -> String {
-        self.proposition_to_surface(&hyp.proposition)
+        match &self.mode {
+            LinearizationMode::Default => self.proposition_to_surface(&hyp.proposition),
+            LinearizationMode::SynonymResponse { query } => {
+                // In synonym-response mode, use the root predicate as the answer.
+                let result = self.lexicon
+                    .surface_for(&hyp.proposition.root, &self.language)
+                    .unwrap_or(&hyp.proposition.root)
+                    .to_string();
+                format!("Another word for '{}' is '{}'.", query, result)
+            }
+        }
     }
 
     /// Convert a PropositionGraph to surface form via lexicon lookup.

@@ -110,18 +110,25 @@ impl Quality {
     pub fn as_f64(self) -> f64  { self.0 as f64 }
 
     /// CE quality signal for a prediction.
-    /// Correct prediction:  signal = (1 - P(correct))   — large update when model uncertain.
-    /// Wrong prediction:    signal = -P(wrong)           — negative update proportional to
-    ///                                                     confidence in the wrong answer.
+    /// Correct: log-scaled CE signal -ln(p)/LN_SCALE, normalised to [0, 1].
+    /// Wrong: linear CE-gradient signal -p_wrong.
+    /// Both signals match the cross-entropy gradient direction for their respective roles.
+    ///
     /// The caller applies this to:
     ///   - expected edge: always positive (pull toward correct)
     ///   - predicted edge (if wrong): negative (push away from wrong)
     pub fn from_ce(p_predicted: f32, was_correct: bool) -> Self {
         if was_correct {
-            Quality::new(1.0 - p_predicted)
+            // Log-scale CE: -ln(p) / LN_SCALE, normalised to [0, 1].
+            // LN_SCALE = -ln(1/V) where V is a typical vocabulary size (~1000);
+            // -ln(0.001) ≈ 6.9. Use 7.0 for a clean constant.
+            const LN_SCALE: f32 = 7.0;
+            let ce = -(p_predicted.max(1e-7)).ln() / LN_SCALE;
+            Quality::new(ce.min(1.0))
         } else {
-            // Negative: the predicted-wrong edge should be weakened.
-            Quality::new(-(p_predicted.min(1.0 - 1e-12)))
+            // CE gradient for wrong class = p_wrong.
+            // Negated: maximum penalty when model is most confident in wrong answer.
+            Quality::new(-(p_predicted.min(1.0 - 1e-7)))
         }
     }
 

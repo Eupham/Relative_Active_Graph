@@ -21,7 +21,7 @@ use crate::rules::{RulerBridge, RuleLifecycleManager};
 use crate::feedback::{AttributionEngine, ProvenanceLog, apply_trace};
 use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult, VocabDistribution};
 use crate::generation::linearizer::LexEntry;
-use crate::feedback::update::{propagate_attribution_backward, apply_attribution};
+use crate::feedback::update::{propagate_attribution_backward, apply_attribution, apply_weight_decay, propagate_edge_to_node_scores};
 
 /// A query submitted to the engine.
 #[derive(Debug, Clone)]
@@ -303,9 +303,16 @@ impl Engine {
 
     /// Execute a full passage as a teacher-forcing training unit.
     ///
-    /// A passage is a sequence of sentences. The ARG is kept open across sentence
-    /// boundaries; attribution is accumulated and flushed only at passage end.
-    /// This enables cross-sentence attribution and 2000+ character training.
+    /// Implements incremental sequential conditioning: at each step, the
+    /// VocabDistribution is computed from tokens 0..t-1 only. Token t is
+    /// committed to context *after* prediction, so the model can never
+    /// trivially predict from the future.
+    ///
+    /// Attribution is accumulated across the whole passage and flushed once
+    /// at the end via backward propagation through the complete ATMS chain.
+    /// Rationale (EBL, structured perceptron, ATMS): per-token propagation
+    /// mutates a graph rebuilt fresh each step, discarding the changes.
+    /// End-of-passage propagation operates on the complete justification structure.
     pub fn execute_passage(
         &mut self,
         trd:       TRDId,
@@ -316,81 +323,119 @@ impl Engine {
         let theta_alpha = self.thresholds.theta_alpha(trd);
         let theta_rho   = self.thresholds.theta_rho(trd);
 
-        let mut passage = PassageContext::new(trd);
-        let mut quality_sum      = 0.0f64;
-        let mut total_steps      = 0usize;
-        let mut final_quality    = Quality::BAD;
-        let mut attributed_edges = Vec::new();
+        let mut passage       = PassageContext::new(trd);
+        let mut quality_sum   = 0.0f64;
+        let mut total_steps   = 0usize;
+        let mut final_quality = Quality::BAD;
+        let mut prev_node_id: Option<NodeId> = None;
 
-        // ── Phase 1: accumulate all nodes and edges from all sentences ────────
-        for sentence in &sentences {
-            let all_nodes: Vec<ArgNode> = sentence.iter()
-                .flat_map(|s| s.node_pool.iter().cloned())
-                .collect();
-            let all_edges: Vec<ArgEdge> = sentence.iter()
-                .flat_map(|s| s.edge_pool.iter().cloned())
-                .collect();
-            passage.absorb_sentence(&all_nodes, &all_edges);
-        }
-
-        // Observe slot occupancy for synonym edge discovery.
-        for n in passage.node_map.values() {
-            let surface = n.surface_str().unwrap_or("_");
-            if let Some(&trd_id) = n.trd_membership.first() {
-                self.slot_tracker.observe(n.id, surface, trd_id, n.mtlg_type);
-            }
-        }
-
-        // ── Phase 2: process each token step against the passage-wide ARG ────
-        let search = passage.build_graph(active_env, theta_alpha, theta_rho);
-
+        // ── Incremental forward pass ──────────────────────────────────────────
+        // At each step: predict from prior context (tokens 0..t-1), accumulate
+        // CE signal, then commit token t to the context graph.
         for sentence in &sentences {
             for step in sentence {
+                let search = passage.step(
+                    step.expected_node_id,
+                    &step.node_pool,
+                    &step.edge_pool,
+                    active_env,
+                    theta_alpha,
+                    theta_rho,
+                    prev_node_id,
+                );
+
                 let dist = VocabDistribution::from_graph(&search.graph, active_env);
                 let (q_correct, q_wrong_opt) = dist.ce_quality_split(step.expected_node_id);
 
                 // Accumulate CE signal on expected node's incoming edges.
-                let incoming_expected: Vec<EdgeId> = search.graph.edge_indices()
-                    .filter(|&ei| search.graph[ei].dst == step.expected_node_id)
-                    .map(|ei| search.graph[ei].id)
-                    .collect();
-                for &eid in &incoming_expected {
-                    passage.signal.accumulate(eid, q_correct.0);
+                for ei in search.graph.edge_indices() {
+                    if search.graph[ei].dst == step.expected_node_id {
+                        passage.signal.accumulate(search.graph[ei].id, q_correct.0);
+                    }
                 }
 
                 // Accumulate negative signal on wrong node's incoming edges.
                 if let Some((wrong_nid, q_neg)) = q_wrong_opt {
-                    let incoming_wrong: Vec<EdgeId> = search.graph.edge_indices()
-                        .filter(|&ei| search.graph[ei].dst == wrong_nid)
-                        .map(|ei| search.graph[ei].id)
-                        .collect();
-                    for &eid in &incoming_wrong {
-                        passage.signal.accumulate(eid, q_neg.0);
+                    for ei in search.graph.edge_indices() {
+                        if search.graph[ei].dst == wrong_nid {
+                            passage.signal.accumulate(search.graph[ei].id, q_neg.0);
+                        }
                     }
                 }
 
                 quality_sum   += q_correct.magnitude() as f64;
                 final_quality  = q_correct;
                 total_steps   += 1;
+                prev_node_id   = Some(step.expected_node_id);
             }
         }
 
-        // ── Phase 3: flush accumulated signal to the attribution engine ───────
+        // Observe slot occupancy for synonym edge discovery.
+        for n in passage.node_map.values() {
+            if let Some(&trd_id) = n.trd_membership.first() {
+                self.slot_tracker.observe(
+                    n.id, n.surface_str().unwrap_or("_"), trd_id, n.mtlg_type,
+                );
+            }
+        }
+
+        // ── End-of-passage flush ──────────────────────────────────────────────
+        // Build the complete passage graph once, then apply all accumulated
+        // signals and propagate backward through the full justification chain.
+        let mut final_graph = passage
+            .build_graph(active_env, theta_alpha, theta_rho)
+            .graph;
+
         let token_count = passage.signal.token_count.max(1) as f32;
+        let mut updated_nodes: Vec<NodeId> = Vec::new();
+
         for (&edge_id, &signal) in &passage.signal.edge_signals {
             let q = Quality::new(signal / token_count);
-            let result = self.apply_attribution_batch(vec![edge_id], q, trd);
-            attributed_edges.extend(result);
-        }
-
-        // Materialise synonym edges every 100 passages.
-        self.tr_counter += 1;
-        if self.tr_counter % 100 == 0 {
-            if let Some(ref mut g) = self.last_graph {
-                self.slot_tracker.materialise_synonym_edges(g, 3);
+            apply_attribution(&mut final_graph, edge_id, 1.0, q);
+            // Track destination nodes for score propagation.
+            if let Some(ei) = final_graph.edge_indices()
+                .find(|&i| final_graph[i].id == edge_id)
+            {
+                updated_nodes.push(final_graph[ei].dst);
             }
         }
 
+        let attributed_edges: Vec<EdgeId> =
+            passage.signal.edge_signals.keys().copied().collect();
+
+        // Backward attribution through ATMS justification chain.
+        // Uses the net passage-level signal as the propagation seed.
+        if total_steps > 0 {
+            let net_q = Quality::new((quality_sum / total_steps as f64) as f32);
+            let terminal_nodes: Vec<NodeId> = sentences.iter()
+                .flat_map(|s| s.iter())
+                .map(|step| step.expected_node_id)
+                .collect();
+            propagate_attribution_backward(
+                &mut final_graph, &self.atms,
+                &terminal_nodes, net_q, 4, 0.7,
+            );
+        }
+
+        // Propagate updated edge weights to node attribution scores.
+        updated_nodes.sort_unstable();
+        updated_nodes.dedup();
+        for nid in updated_nodes {
+            propagate_edge_to_node_scores(&mut final_graph, nid);
+        }
+
+        // Periodic weight decay every 50 passages.
+        self.tr_counter += 1;
+        if self.tr_counter % 50 == 0 {
+            apply_weight_decay(&mut final_graph, 0.001);
+        }
+
+        // Periodic synonym materialisation every 100 passages.
+        if self.tr_counter % 100 == 0 {
+            self.slot_tracker.materialise_synonym_edges(&mut final_graph, 3);
+        }
+
+        self.last_graph = Some(final_graph);
         self.perf.update(trd, final_quality);
         self.thresholds.sync(&self.perf);
 

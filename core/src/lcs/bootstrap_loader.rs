@@ -79,18 +79,15 @@ pub fn load_bootstrap(dir: &Path) -> BootstrapArtefacts {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                 if let Some(arr) = json.as_array() {
                     for item in arr {
-                        let id    = item["id"].as_u64().unwrap_or(0) as u32;
                         let label = item["label"].as_str().unwrap_or("").to_string();
                         let count = item["count"].as_u64().unwrap_or(0) as usize;
                         let centroid: Vec<f32> = item["centroid"]
                             .as_array()
                             .map(|a| a.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
                             .unwrap_or_default();
-                        if id >= 7 {
-                            artefacts.registry.register(centroid.clone(), label.clone(), count);
-                        } else {
-                            artefacts.registry.update_centroid(TypeCategory(id), centroid, count);
-                        }
+                        // All category IDs are discovered clusters; register each one.
+                        // The registry assigns its own sequential ID starting from 1.
+                        artefacts.registry.register(centroid, label, count);
                     }
                 }
             }
@@ -152,9 +149,10 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn empty_artefacts_has_six_prototypes() {
+    fn empty_artefacts_has_empty_registry() {
+        // The registry starts empty; categories are populated by bootstrap clustering.
         let a = BootstrapArtefacts::empty();
-        assert!(a.registry.len() >= 6);
+        assert!(a.registry.is_empty(), "fresh registry must start empty — no hard-coded prototypes");
     }
 
     #[test]

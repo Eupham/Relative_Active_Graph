@@ -6,51 +6,22 @@
 
 use std::collections::HashMap;
 
-// ── Dependency relation sets ──────────────────────────────────────────────────
-// These describe *structural roles* in the dependency tree, not categorical
-// identity of the token.  Using them as structural evidence is correct;
-// comparing tok.upos to "VERB" would not be.
+// ── Dependency relation utilities ─────────────────────────────────────────────
 
-/// Relations in which the governed token fills a thematic argument role.
-pub fn is_core_arg(deprel: &str) -> bool {
-    matches!(deprel, "nsubj" | "obj" | "iobj" | "csubj" | "ccomp" | "xcomp")
+/// FNV-1a hash of a deprel string. Produces an opaque u32 feature ID.
+///
+/// Used to convert UD relation strings into numeric feature dimensions
+/// without embedding any linguistic theory about what the relation means.
+/// The inducer learns which deprel patterns cluster together from data.
+pub fn deprel_hash(deprel: &str) -> u32 {
+    const OFFSET: u32 = 0x811c_9dc5;
+    const PRIME:  u32 = 0x0100_0193;
+    deprel.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u32)
 }
 
-/// Relations in which the governed token heads a subordinate clause.
-pub fn is_clausal(deprel: &str) -> bool {
-    matches!(deprel, "ccomp" | "xcomp" | "advcl" | "csubj" | "acl" | "acl:relcl")
-}
-
-/// Adverbial modification relations (manner, time, place, degree).
-pub fn is_adverbial(deprel: &str) -> bool {
-    matches!(deprel, "advmod" | "obl" | "dislocated")
-}
-
-/// Predicative modification relations (descriptive, property-bearing).
-pub fn is_predicative(deprel: &str) -> bool {
-    matches!(deprel, "amod" | "cop")
-}
-
-/// Coordination and subordination connectors.
-pub fn is_connector(deprel: &str) -> bool {
-    matches!(deprel, "cc" | "mark" | "punct" | "conj")
-}
-
-/// Discourse and vocative grounding.
-pub fn is_discourse(deprel: &str) -> bool {
-    matches!(deprel, "discourse" | "vocative")
-}
-
-/// Functional / auxiliary elements: do not project independent argument structure.
-pub fn is_functional(deprel: &str) -> bool {
-    matches!(
-        deprel,
-        "aux" | "det" | "case" | "clf" | "fixed" | "flat" | "compound"
-            | "goeswith" | "reparandum" | "orphan" | "expl"
-    )
-}
-
-/// Long-range / extracted dependencies → ◊ (Lozenge) mode.
+/// Long-range / extracted dependencies → ◊ (Lozenge) modal mode.
+///
+/// Used for modal mode assignment (structural bookkeeping), not category scoring.
 pub fn is_long_range(deprel: &str) -> bool {
     matches!(deprel, "acl:relcl" | "nsubj:outer" | "obj:outer")
 }
@@ -185,12 +156,19 @@ mod tests {
     }
 
     #[test]
-    fn deprel_sets_are_disjoint_for_typical_cases() {
-        assert!(is_core_arg("nsubj"));
-        assert!(!is_functional("nsubj"));
-        assert!(is_functional("aux"));
-        assert!(!is_core_arg("aux"));
-        assert!(is_connector("cc"));
-        assert!(is_discourse("discourse"));
+    fn deprel_hash_stable_and_distinct() {
+        // Same input always produces same hash.
+        assert_eq!(deprel_hash("nsubj"), deprel_hash("nsubj"));
+        // Distinct inputs produce distinct hashes.
+        assert_ne!(deprel_hash("nsubj"), deprel_hash("obj"));
+        assert_ne!(deprel_hash("root"), deprel_hash("dep"));
+    }
+
+    #[test]
+    fn long_range_detection() {
+        assert!(is_long_range("acl:relcl"));
+        assert!(is_long_range("nsubj:outer"));
+        assert!(!is_long_range("nsubj"));
+        assert!(!is_long_range("obj"));
     }
 }

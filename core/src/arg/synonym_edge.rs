@@ -53,17 +53,24 @@ impl SlotOccupancyTracker {
     }
 
     /// Create or strengthen synonym edges in the ARG for all qualifying pairs.
+    ///
+    /// Creates both forward (src→dst) and reverse (dst→src) edges so that
+    /// `synonym_query` traversal works in both directions without a separate pass.
     pub fn materialise_synonym_edges(
         &mut self,
         graph:     &mut ArgGraph,
         min_count: usize,
     ) {
         for (src, dst, strength) in self.synonym_candidates(min_count) {
-            let already_exists = graph.edge_indices()
+            let fwd_exists = graph.edge_indices()
                 .any(|ei| graph[ei].src == src && graph[ei].dst == dst);
-            if !already_exists {
-                let src_idx = graph.node_indices().find(|&i| graph[i].id == src);
-                let dst_idx = graph.node_indices().find(|&i| graph[i].id == dst);
+            let rev_exists = graph.edge_indices()
+                .any(|ei| graph[ei].src == dst && graph[ei].dst == src);
+
+            let src_idx = graph.node_indices().find(|&i| graph[i].id == src);
+            let dst_idx = graph.node_indices().find(|&i| graph[i].id == dst);
+
+            if !fwd_exists {
                 if let (Some(si), Some(di)) = (src_idx, dst_idx) {
                     let eid = self.next_synonym_edge_id;
                     self.next_synonym_edge_id += 1;
@@ -74,7 +81,23 @@ impl SlotOccupancyTracker {
             } else if let Some(ei) = graph.edge_indices()
                 .find(|&i| graph[i].src == src && graph[i].dst == dst)
             {
-                // Strengthen existing synonym edge.
+                // Strengthen existing forward synonym edge.
+                graph[ei].weight = (graph[ei].weight + 0.01 * strength).min(1.0);
+            }
+
+            // Create or strengthen the reverse edge (dst→src).
+            if !rev_exists {
+                if let (Some(si), Some(di)) = (src_idx, dst_idx) {
+                    let rev_eid = self.next_synonym_edge_id;
+                    self.next_synonym_edge_id += 1;
+                    let mut e = ArgEdge::new(rev_eid, dst, src, EdgeClass::DEFAULT, ModalMode::Diamond);
+                    e.weight = strength;
+                    graph.add_edge(di, si, e);
+                }
+            } else if let Some(ei) = graph.edge_indices()
+                .find(|&i| graph[i].src == dst && graph[i].dst == src)
+            {
+                // Strengthen existing reverse synonym edge.
                 graph[ei].weight = (graph[ei].weight + 0.01 * strength).min(1.0);
             }
         }
