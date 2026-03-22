@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -22,10 +22,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LexEntry:
     """One (lemma, ucca_cat) pair with frequency-derived probability."""
-    lemma:      str
-    ucca_cat:   str   # structural category label (e.g. "Process", "Participant")
-    count:      float = 1.0
+    lemma:       str
+    ucca_cat:    str   # structural category label (e.g. "Process", "Participant")
+    count:       float = 1.0
     probability: float = 0.0
+    role_order:  list[str] = field(default_factory=list)
+    # role_order: observed ordering of ARG0/ARG1 relative to ROOT surface,
+    # derived from UD head-dependent positions in the training corpus.
+    # Empty list = use default ROOT-first order.
 
 
 class LexiconInducer:
@@ -42,6 +46,8 @@ class LexiconInducer:
     def __init__(self) -> None:
         # lemma → list of LexEntry (one per observed ucca_cat)
         self._entries: dict[str, list[LexEntry]] = defaultdict(list)
+        # lemma → Counter keyed by tuple(role_sequence)
+        self._role_orders: dict[str, Counter] = {}
 
     def observe(self, lemma: str, ucca_cat: str, count: float = 1.0) -> None:
         """Record an observation of `lemma` appearing in structural role `ucca_cat`."""
@@ -82,6 +88,28 @@ class LexiconInducer:
         # Re-normalise totals after all deltas have been applied.
         self.normalise()
 
+    def observe_role_order(self, lemma: str, role_sequence: list[str]) -> None:
+        """
+        Record an observed surface order of role slots for `lemma`.
+
+        role_sequence is a list like ["ARG0", "ROOT", "ARG1"] where each element
+        is either a role label (from UD deprel) or "ROOT" (the head lemma itself).
+
+        The most frequently observed sequence becomes the exported role_order.
+        Stored as a Counter keyed by tuple(role_sequence).
+        """
+        if lemma not in self._role_orders:
+            self._role_orders[lemma] = Counter()
+        key = tuple(role_sequence)
+        self._role_orders[lemma][key] += 1
+
+    def top_role_order(self, lemma: str) -> list[str]:
+        """Return the most frequently observed role order for `lemma`, or [] if unknown."""
+        if lemma not in self._role_orders:
+            return []
+        most_common = self._role_orders[lemma].most_common(1)
+        return list(most_common[0][0]) if most_common else []
+
     def top_categories(self, lemma: str, n: int = 3) -> list[LexEntry]:
         """Return the top-N most probable categories for `lemma`."""
         entries = self._entries.get(lemma, [])
@@ -91,7 +119,12 @@ class LexiconInducer:
         data: dict[str, list[dict]] = {}
         for lemma, entries in self._entries.items():
             data[lemma] = [
-                {"ucca_cat": e.ucca_cat, "count": e.count, "probability": e.probability}
+                {
+                    "ucca_cat":    e.ucca_cat,
+                    "count":       e.count,
+                    "probability": e.probability,
+                    "role_order":  self.top_role_order(lemma),
+                }
                 for e in entries
             ]
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
@@ -108,6 +141,7 @@ class LexiconInducer:
                     ucca_cat=e["ucca_cat"],
                     count=e["count"],
                     probability=e["probability"],
+                    role_order=e.get("role_order", []),
                 ))
         return inducer
 

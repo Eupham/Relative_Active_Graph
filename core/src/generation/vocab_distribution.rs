@@ -2,6 +2,7 @@
 //! Maps cross-entropy gradient to Quality signal for teacher forcing.
 //! Vocabulary identity is the NodeId itself — not a transient edge ID.
 
+use sha2::{Sha256, Digest};
 use crate::types::{NodeId, Quality, Env};
 use crate::arg::ArgGraph;
 
@@ -53,6 +54,25 @@ impl VocabDistribution {
             .unwrap_or(0.0)
     }
 
+    /// Probability of the node with `node_id` (alias for probability_of_node).
+    pub fn probability_for(&self, node_id: NodeId) -> f32 {
+        self.probs.iter()
+            .find(|&&(nid, _)| nid == node_id)
+            .map(|&(_, p)| p)
+            .unwrap_or(0.0)
+    }
+
+    /// Return the probability mass for the node whose surface matches `predicate`.
+    ///
+    /// Used by the autoregressive linearizer to rank argument fillers by learned
+    /// attribution score rather than definition order.
+    /// Returns 0.0 if no matching node is found (will still be emitted; score only
+    /// affects ordering when role_order is empty).
+    pub fn score_for_predicate(&self, predicate: &str) -> f32 {
+        let target_id = stable_node_id(predicate);
+        self.probability_for(target_id)
+    }
+
     /// CE quality split against the expected node.
     ///
     /// Returns:
@@ -77,6 +97,19 @@ impl VocabDistribution {
 
         (q_correct, q_wrong)
     }
+}
+
+/// Stable 48-bit node hash matching c4_sequence_extractor._stable_node_id.
+/// This function must remain byte-for-byte compatible with the Python side.
+fn stable_node_id(predicate: &str) -> NodeId {
+    let mut hasher = Sha256::new();
+    hasher.update(predicate.as_bytes());
+    let result = hasher.finalize();
+    // Take the first 6 bytes (48 bits) as a u64, matching Python's & 0xFFFFFFFFFFFF.
+    let bytes = &result[..6];
+    let mut id: u64 = 0;
+    for &b in bytes { id = (id << 8) | (b as u64); }
+    id
 }
 
 #[cfg(test)]

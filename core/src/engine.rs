@@ -19,8 +19,9 @@ use crate::causal::CounterfactualReasoner;
 use crate::semantics::MtlgSemantics;
 use crate::rules::{RulerBridge, RuleLifecycleManager};
 use crate::feedback::{AttributionEngine, ProvenanceLog, apply_trace};
-use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult, VocabDistribution};
+use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult, VocabDistribution, Hypothesis};
 use crate::generation::linearizer::LexEntry;
+use crate::semantics::mtlg_semantics::PropositionGraph;
 use crate::feedback::update::{propagate_attribution_backward, apply_attribution, apply_weight_decay, propagate_edge_to_node_scores};
 
 /// A query submitted to the engine.
@@ -117,7 +118,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Self {
-        Self {
+        let mut engine = Self {
             atms:            BaseAtms::new(),
             context_stack:   ContextStack::new(),
             perf:            PerfRegistry::new(0.25),
@@ -135,7 +136,9 @@ impl Engine {
             node_pool_cache: Vec::new(),
             global_lexicon:  HashMap::new(),
             slot_tracker:    SlotOccupancyTracker::new(),
-        }
+        };
+        engine.bootstrap_relational_lexicon();
+        engine
     }
 
     /// Full execution cycle for a query.
@@ -187,7 +190,7 @@ impl Engine {
         }
 
         let surface_output = dr.hypotheses.first()
-            .map(|h| linearizer.linearize(h))
+            .map(|h| linearizer.autoregressive_linearize(&h.proposition, graph, active_env))
             .unwrap_or_else(|| format!("[no hypothesis for '{}']", query.text));
 
         // ── 9. Quality assessment (heuristic: satisfied + depth bonus) ────────
@@ -484,6 +487,81 @@ impl Engine {
         candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(n);
         candidates
+    }
+
+    /// Convert synonym query results for `surface` into a Hypothesis ready for
+    /// standard linearization via Linearizer::autoregressive_linearize.
+    ///
+    /// The predicate `"synonym_of"` must be registered in global_lexicon for the
+    /// target language with appropriate role_order (see bootstrap_relational_lexicon).
+    /// If no synonym is found, returns None.
+    pub fn synonym_query_as_hypothesis(
+        &self,
+        surface:  &str,
+        language: &str,
+        n:        usize,
+    ) -> Option<Hypothesis> {
+        let results = self.synonym_query(surface, n);
+        let (synonym, score) = results.into_iter().next()?;
+
+        let prop = PropositionGraph {
+            root:       "synonym_of".into(),
+            roles:      vec![
+                ("ARG0".into(), surface.to_string()),
+                ("ARG1".into(), synonym),
+            ],
+            lambda_str: format!("synonym_of({}, {})", surface, surface),
+        };
+
+        Some(Hypothesis {
+            id:          0,
+            lambda_str:  prop.lambda_str.clone(),
+            proposition: prop,
+            relevance:   score,
+            root_node:   0,
+        })
+    }
+
+    /// Register built-in relational predicates across all supported languages.
+    ///
+    /// This must be called once after Engine::new() and before any synonym queries
+    /// are issued. It seeds global_lexicon with the surface forms and role_order
+    /// frames for predicates that are not induced from mC4 (because they express
+    /// meta-relations, not object-level predicates).
+    ///
+    /// The role_order field encodes the surface slot sequence:
+    ///   "ROOT"  → the predicate's own surface form
+    ///   "ARG0"  → the subject/topic argument
+    ///   "ARG1"  → the result/target argument
+    pub fn bootstrap_relational_lexicon(&mut self) {
+        let entries: &[(&str, &str, &str, &[&str])] = &[
+            // (predicate, language, surface, role_order)
+            ("synonym_of", "en", "another word for", &["ARG0", "ROOT", "ARG1"]),
+            ("synonym_of", "de", "ein anderes Wort für", &["ARG0", "ROOT", "ARG1"]),
+            ("synonym_of", "fr", "un autre mot pour", &["ARG0", "ROOT", "ARG1"]),
+            ("synonym_of", "es", "otra palabra para", &["ARG0", "ROOT", "ARG1"]),
+            ("synonym_of", "zh", "的同义词是", &["ARG0", "ROOT", "ARG1"]),
+            ("synonym_of", "ja", "の同義語は", &["ARG0", "ROOT", "ARG1"]),
+            ("no_synonym", "en", "no synonym found for", &["ROOT", "ARG0"]),
+            ("no_synonym", "de", "kein Synonym gefunden für", &["ROOT", "ARG0"]),
+            ("no_synonym", "fr", "aucun synonyme trouvé pour", &["ROOT", "ARG0"]),
+            ("no_synonym", "es", "ningún sinónimo encontrado para", &["ROOT", "ARG0"]),
+            ("no_synonym", "zh", "未找到同义词", &["ROOT", "ARG0"]),
+            ("no_synonym", "ja", "同義語が見つかりません", &["ROOT", "ARG0"]),
+        ];
+
+        for (predicate, language, surface, role_order) in entries {
+            let entry = LexEntry {
+                predicate:  (*predicate).into(),
+                language:   (*language).into(),
+                surface:    (*surface).into(),
+                modal_type: ModalType::default(),
+                role_order: role_order.iter().map(|s| s.to_string()).collect(),
+            };
+            // Per-language key so multiple languages don't overwrite each other.
+            let key = format!("{}:{}", language, predicate);
+            self.global_lexicon.insert(key, entry);
+        }
     }
 
     /// Apply a batch of edge attribution updates for the given quality signal.

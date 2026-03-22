@@ -17,3 +17,4 @@ rand       = { workspace = true }
 hashbrown  = { workspace = true }
 fnv        = { workspace = true }
 tokio      = { workspace = true }
+sha2       = "0.10"
