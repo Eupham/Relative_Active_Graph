@@ -62,17 +62,6 @@ impl VocabDistribution {
             .unwrap_or(0.0)
     }
 
-    /// Return the probability mass for the node whose surface matches `predicate`.
-    ///
-    /// Used by the autoregressive linearizer to rank argument fillers by learned
-    /// attribution score rather than definition order.
-    /// Returns 0.0 if no matching node is found (will still be emitted; score only
-    /// affects ordering when role_order is empty).
-    pub fn score_for_predicate(&self, predicate: &str) -> f32 {
-        let target_id = stable_node_id(predicate);
-        self.probability_for(target_id)
-    }
-
     /// CE quality split against the expected node.
     ///
     /// Returns:

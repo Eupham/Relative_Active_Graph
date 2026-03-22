@@ -39,14 +39,12 @@ fn test_generative_inference_pipeline() {
         language: "en".into(),
         surface: "runs".into(),
         modal_type: ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
-        role_order: vec![],
     });
     linearizer.lexicon.register(LexEntry {
         predicate: "alice".into(),
         language: "en".into(),
         surface: "Alice".into(),
         modal_type: ModalType::atom(ModalMode::Diamond, TypeCategory(6)),
-        role_order: vec![],
     });
 
     // 2. Build mock ARG Graph
@@ -85,84 +83,46 @@ fn test_generative_inference_pipeline() {
 }
 
 #[test]
-fn synonym_linearizes_via_pipeline_not_template() {
-    use csrre_core::types::ModalType;
+fn decode_high_attribution_before_low() {
+    use csrre_core::Engine;
 
-    let mut lin = Linearizer::new("en");
+    let mut engine = Engine::new();
+    // Push a context so that active_env is non-zero (nodes need env subsumption).
+    engine.context_stack.push(1, None);
 
-    // Register the relational predicate with frame order.
-    lin.lexicon.register(LexEntry {
-        predicate:  "synonym_of".into(),
-        language:   "en".into(),
-        surface:    "another word for".into(),
-        modal_type: ModalType::default(),
-        role_order: vec!["ARG0".into(), "ROOT".into(), "ARG1".into()],
-    });
-    lin.lexicon.register(LexEntry {
-        predicate:  "run".into(),
-        language:   "en".into(),
-        surface:    "run".into(),
-        modal_type: ModalType::default(),
-        role_order: vec![],
-    });
-    lin.lexicon.register(LexEntry {
-        predicate:  "jog".into(),
-        language:   "en".into(),
-        surface:    "jog".into(),
-        modal_type: ModalType::default(),
-        role_order: vec![],
-    });
+    // Node with high attribution should appear before node with low attribution.
+    let high_node = create_mock_node(100, "important", 0.9);
+    let low_node  = create_mock_node(200, "trivial",   0.1);
 
-    let prop = PropositionGraph {
-        root:       "synonym_of".into(),
-        roles:      vec![
-            ("ARG0".into(), "run".into()),
-            ("ARG1".into(), "jog".into()),
-        ],
-        lambda_str: "synonym_of(run, jog)".into(),
-    };
-    let hyp = Hypothesis {
-        id: 0, lambda_str: prop.lambda_str.clone(),
-        proposition: prop, relevance: 1.0, root_node: 0,
-    };
+    let decoded = engine.decode(&[high_node, low_node], &[], 0, 32);
 
-    let surface = lin.linearize(&hyp);
-
-    // Must NOT be a hardcoded template format.
-    // Must be compositionally assembled from lexicon entries.
-    assert_eq!(surface, "run another word for jog");
-
-    // Verify no_synonym fallback also works compositionally.
-    lin.lexicon.register(LexEntry {
-        predicate:  "no_synonym".into(),
-        language:   "en".into(),
-        surface:    "no synonym found for".into(),
-        modal_type: ModalType::default(),
-        role_order: vec!["ROOT".into(), "ARG0".into()],
-    });
-    let prop2 = PropositionGraph {
-        root:       "no_synonym".into(),
-        roles:      vec![("ARG0".into(), "xyzzy".into())],
-        lambda_str: "no_synonym(xyzzy)".into(),
-    };
-    let hyp2 = Hypothesis {
-        id: 1, lambda_str: prop2.lambda_str.clone(),
-        proposition: prop2, relevance: 0.0, root_node: 0,
-    };
-    let surface2 = lin.linearize(&hyp2);
-    assert_eq!(surface2, "no synonym found for xyzzy");
+    // The decoded output must contain the high-attribution node.
+    // With only two nodes in the seed pool, the model should pick
+    // the one with the highest attribution score first.
+    assert!(!decoded.is_empty(), "decode should produce at least one token");
+    assert_eq!(decoded[0], 100, "highest-attribution node should be decoded first");
 }
 
 #[test]
-fn empty_role_order_preserves_existing_behaviour() {
+fn decode_empty_pool_returns_empty() {
+    use csrre_core::Engine;
+
+    let mut engine = Engine::new();
+
+    let decoded = engine.decode(&[], &[], 0, 32);
+    assert!(decoded.is_empty(), "decode with empty seed pool should return empty vec");
+}
+
+#[test]
+fn proposition_to_surface_root_first_layout() {
     let mut lin = Linearizer::new("en");
     lin.lexicon.register(LexEntry {
         predicate: "run".into(), language: "en".into(), surface: "runs".into(),
-        modal_type: ModalType::default(), role_order: vec![],
+        modal_type: ModalType::default(),
     });
     lin.lexicon.register(LexEntry {
         predicate: "alice".into(), language: "en".into(), surface: "Alice".into(),
-        modal_type: ModalType::default(), role_order: vec![],
+        modal_type: ModalType::default(),
     });
     let prop = PropositionGraph {
         root: "run".into(),
@@ -171,6 +131,6 @@ fn empty_role_order_preserves_existing_behaviour() {
     };
     let hyp = Hypothesis { id: 0, lambda_str: prop.lambda_str.clone(),
         proposition: prop, relevance: 0.9, root_node: 1 };
-    // Empty role_order → existing ROOT-first behaviour.
+    // ROOT-first behaviour: root surface then args in definition order.
     assert_eq!(lin.linearize(&hyp), "runs Alice");
 }
