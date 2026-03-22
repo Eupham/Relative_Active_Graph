@@ -19,9 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
-from ud_to_mtlg import MtlgGraph, MtlgNode, ud_tree_to_mtlg
-from morphological_fst import preprocess_for_type_assignment
-
 logger = logging.getLogger(__name__)
 
 
@@ -140,39 +137,36 @@ def run_induction_pipeline(
     max_samples: int = 5_000,
     output_dir:  str = "lexicons",
 ) -> PerLanguageLexicon:
-    """End-to-end induction: mC4 stream → UD parse → MTLG graph → lexicon."""
-    from mc4_stream import stream_mc4, requires_fst
-    from ud_parser import UdParser
+    import sys
+    from pathlib import Path as _Path
+    sys.path.insert(0, str(_Path(__file__).parent.parent / "training"))
+    from mc4_stream import stream_mc4, _split_sentences
+    from c4_sequence_extractor import _sentence_to_sequence
 
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-
-    parser  = UdParser(language)
     inducer = MtlgInducer(language)
-
-    def graph_stream():
-        for item in stream_mc4(language, max_samples=max_samples):
-            tokens = preprocess_for_type_assignment(item["text"], language)
-            sentence = " ".join(t.split("[")[0] for t in tokens)  # strip FST tags for parser
-            try:
-                tree  = parser.parse(sentence)
-                graph = ud_tree_to_mtlg(tree)
-                yield graph
-            except Exception as exc:
-                logger.debug("Parse error: %s", exc)
-
-    lex = inducer.induce_from_stream(graph_stream(), max_trees=max_samples)
-    lex.save(out_path / f"{language}_lexicon.json")
-    return lex
+    count = 0
+    for item in stream_mc4(language, max_samples=max_samples):
+        for sentence in _split_sentences(item.get("text", "")):
+            if count >= max_samples:
+                break
+            seq = _sentence_to_sequence(sentence, trd_id=0)
+            for step in seq.steps:
+                inducer.lexicon.update(step.lemma, "diamond", 0, 0, 1.0)
+            count += 1
+    inducer.lexicon.normalize()
+    inducer.lexicon.save(out_path / f"{language}_lexicon.json")
+    return inducer.lexicon
 
 
 if __name__ == "__main__":
     import sys
     lang = sys.argv[1] if len(sys.argv) > 1 else "en"
     lex  = run_induction_pipeline(lang, max_samples=100)
-    print(f"Induced {len(lex.entries)} lemmas for {lang}")
-    # Show top 5 by count
-    top = sorted(lex.entries.items(), key=lambda kv: sum(e.count for e in kv[1]), reverse=True)[:5]
-    for lemma, entries in top:
+    print(f"Induced {len(lex.entries)} characters for {lang}")
+    top = sorted(lex.entries.items(),
+                 key=lambda kv: sum(e.count for e in kv[1]), reverse=True)[:10]
+    for char, entries in top:
         best = max(entries, key=lambda e: e.count)
-        print(f"  {lemma}: mode={best.modal_mode} cat_id={best.category_id} arity={best.arity} count={best.count:.0f}")
+        print(f"  {repr(char)}: count={best.count:.0f}")

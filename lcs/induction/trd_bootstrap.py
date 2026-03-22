@@ -16,14 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
-import math
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-
-from ud_to_mtlg import MtlgGraph
 
 logger = logging.getLogger(__name__)
 
@@ -49,22 +45,24 @@ class TrdEntry:
         }
 
 
-def graph_to_modal_vector(graph: MtlgGraph, vocab: list[str]) -> np.ndarray:
-    """Convert a graph's modal type distribution to a fixed-size vector."""
-    counts: Counter = Counter()
-    for edge in graph.edges:
-        key = f"{edge.modal_mode}_{edge.category_id}"
-        counts[key] += 1
+def _sentence_to_bigram_vector(sentence: str, vocab: list[str]) -> "np.ndarray":
+    """Character bigram frequency vector. Clusters by script/language/register."""
+    counts: dict[str, int] = {}
+    chars = list(sentence)
+    for i in range(len(chars) - 1):
+        bg = chars[i] + chars[i + 1]
+        counts[bg] = counts.get(bg, 0) + 1
     total = sum(counts.values()) or 1
     return np.array([counts.get(v, 0) / total for v in vocab], dtype=np.float32)
 
 
-def build_vocabulary(graphs: list[MtlgGraph]) -> list[str]:
-    """Build the modal-profile vocabulary from observed (mode, category_id) pairs."""
-    keys: set = set()
-    for g in graphs:
-        for e in g.edges:
-            keys.add(f"{e.modal_mode}_{e.category_id}")
+def build_bigram_vocabulary(sentences: list[str]) -> list[str]:
+    """Sorted list of all observed character bigrams."""
+    keys: set[str] = set()
+    for s in sentences:
+        chars = list(s)
+        for i in range(len(chars) - 1):
+            keys.add(chars[i] + chars[i + 1])
     return sorted(keys)
 
 
@@ -118,55 +116,51 @@ class TrdBootstrapper:
         self.trds:     list[TrdEntry] = []
         self._model:   KMeansTrd | None = None
 
-    def bootstrap(self, graphs: list[MtlgGraph], language: str) -> list[TrdEntry]:
-        """Crystallize TRDs from a batch of MTLG graphs."""
-        if not graphs:
+    def bootstrap(self, sentences: list[str], language: str) -> list[TrdEntry]:
+        if not sentences:
+            logger.warning("No sentences provided for TRD bootstrap")
             return []
-        self.vocab = build_vocabulary(graphs)
-        vectors    = np.stack([graph_to_modal_vector(g, self.vocab) for g in graphs])
-        n_clusters = min(self.n_clusters, len(graphs), MAX_TRD_VOCAB)
-        self._model = KMeansTrd(n_clusters)
+        self.vocab = build_bigram_vocabulary(sentences)
+        if not self.vocab:
+            logger.warning("Empty bigram vocabulary")
+            return []
+        vectors = np.stack([_sentence_to_bigram_vector(s, self.vocab) for s in sentences])
+        k = min(self.n_clusters, len(sentences))
+        self._model = KMeansTrd(n_clusters=k)
         assignments = self._model.fit(vectors)
-        self.trds = self._build_trd_entries(graphs, assignments, n_clusters, language)
-        logger.info("Bootstrapped %d TRDs for %s from %d graphs", len(self.trds), language, len(graphs))
-        return self.trds
-
-    def _build_trd_entries(
-        self, graphs: list[MtlgGraph], assignments: np.ndarray,
-        n_clusters: int, language: str,
-    ) -> list[TrdEntry]:
-        cluster_graphs: dict[int, list[MtlgGraph]] = defaultdict(list)
-        for i, g in enumerate(graphs):
-            cluster_graphs[int(assignments[i])].append(g)
-
-        trds = []
-        for cluster_id, cg in cluster_graphs.items():
-            # Build modal profile from cluster centroid.
-            centroid = self._model.centroids[cluster_id]
-            profile  = {v: float(centroid[i]) for i, v in enumerate(self.vocab) if centroid[i] > 0.01}
-            # Characteristic infon patterns: most common lemmas in this cluster.
-            lemma_counter: Counter = Counter()
-            for g in cg:
-                for node in g.nodes:
-                    if node.category_id in (1, 6):  # Process=1, Participant=6
-                        lemma_counter[node.lemma] += 1
-            top_lemmas = [l for l, _ in lemma_counter.most_common(5)]
+        trds: list[TrdEntry] = []
+        for cluster_id in range(k):
+            members = [sentences[i] for i, a in enumerate(assignments) if a == cluster_id]
+            if not members:
+                continue
+            profile: dict[str, float] = {}
+            for s in members:
+                chars = list(s)
+                for i in range(len(chars) - 1):
+                    bg = chars[i] + chars[i + 1]
+                    profile[bg] = profile.get(bg, 0) + 1
+            total = sum(profile.values()) or 1
+            profile = {k: v / total for k, v in profile.items()}
+            top_bigrams = sorted(profile, key=lambda x: profile[x], reverse=True)[:5]
             trds.append(TrdEntry(
                 trd_id=cluster_id,
                 label=f"{language}_trd_{cluster_id}",
                 modal_profile=profile,
-                infon_patterns=top_lemmas,
-                support=len(cg),
+                infon_patterns=top_bigrams,
+                support=len(members),
             ))
+        self.trds = trds
+        logger.info("Bootstrapped %d TRDs for language=%s from %d sentences",
+                    len(trds), language, len(sentences))
         return trds
 
-    def coverage(self, held_out: list[MtlgGraph]) -> float:
-        """Fraction of held-out graphs that map to a known TRD."""
+    def coverage(self, held_out: list[str]) -> float:
+        """Fraction of held-out sentences that map to a known TRD."""
         if not held_out or self._model is None:
             return 0.0
         matched = 0
-        for g in held_out:
-            vec = graph_to_modal_vector(g, self.vocab)
+        for s in held_out:
+            vec = _sentence_to_bigram_vector(s, self.vocab)
             trd_id = self._model.predict(vec)
             if any(t.trd_id == trd_id for t in self.trds):
                 matched += 1
@@ -213,26 +207,13 @@ class TrdBootstrapper:
 
 if __name__ == "__main__":
     import sys
-    from ud_to_mtlg import ud_tree_to_mtlg
-    from ud_parser import UdParser
     from mc4_stream import stream_mc4
-    from morphological_fst import preprocess_for_type_assignment
-
-    lang = sys.argv[1] if len(sys.argv) > 1 else "en"
-    parser = UdParser(lang)
-    graphs = []
-    for item in stream_mc4(lang, max_samples=200):
-        try:
-            tokens   = preprocess_for_type_assignment(item["text"], lang)
-            sentence = " ".join(t.split("[")[0] for t in tokens)
-            tree     = parser.parse(sentence)
-            graphs.append(ud_tree_to_mtlg(tree))
-        except Exception:
-            pass
-
-    train, held_out = graphs[:150], graphs[150:]
+    lang    = sys.argv[1] if len(sys.argv) > 1 else "en"
+    samples = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+    sentences = [item["text"] for item in stream_mc4(lang, max_samples=samples)
+                 if item.get("text", "").strip()]
     bootstrapper = TrdBootstrapper(n_clusters=16)
-    trds = bootstrapper.bootstrap(train, lang)
-    cov  = bootstrapper.coverage(held_out)
-    print(f"TRDs: {len(trds)}, coverage on held-out: {cov:.2%}")
-    bootstrapper.save(Path(f"{lang}_trds.json"))
+    trds = bootstrapper.bootstrap(sentences, lang)
+    print(f"TRDs: {len(trds)}")
+    for t in trds[:3]:
+        print(f"  {t.label}: support={t.support}, top_bigrams={t.infon_patterns[:3]}")

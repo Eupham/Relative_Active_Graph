@@ -114,6 +114,7 @@ pub struct Engine {
     pub global_lexicon: HashMap<String, LexEntry>,
     /// Slot occupancy tracker for synonym edge discovery.
     pub slot_tracker:   SlotOccupancyTracker,
+    pub normalizer:     crate::arg::symbolica_adapter::AlgebraicNormalizer,
 }
 
 impl Engine {
@@ -136,6 +137,7 @@ impl Engine {
             node_pool_cache: Vec::new(),
             global_lexicon:  HashMap::new(),
             slot_tracker:    SlotOccupancyTracker::new(),
+            normalizer:      crate::arg::symbolica_adapter::AlgebraicNormalizer::new(),
         };
         engine
     }
@@ -172,14 +174,45 @@ impl Engine {
             log::warn!("Sheaf violations={}: {} triangle inconsistencies", sheaf_result.violation_count, sheaf_result.violations.len());
         }
 
-        // ── 5. Graphica memo check ────────────────────────────────────────────
+        // ── 5. Graphica memo check + traversal + shortcut ─────────────────────────
         let nodes_ref: Vec<_> = graph.node_indices().map(|i| &graph[i]).collect();
         let edges_ref: Vec<_> = graph.edge_indices().map(|i| &graph[i]).collect();
         let cache_key = build_key(&nodes_ref, &edges_ref, active_env);
 
-        // ── 6. E-graph saturation (on non-cached subgraphs) ───────────────────
         if self.graphica.get(&cache_key).is_none() {
             self.egraph.saturate();
+            self.graphica.insert(crate::arg::graphica_adapter::CachedResult {
+                key:                   cache_key,
+                edge_deltas:           std::collections::HashMap::new(),
+                quality:               0.5,
+                traversal_count:       1,
+                shortcut_canonical_id: None,
+            });
+        } else {
+            let count = self.graphica.record_traversal(&cache_key);
+            if count == crate::arg::graphica_adapter::MIN_SHORTCUT_TRAVERSALS {
+                if let Some((src, dst, path_modes, path_weights)) = dominant_path(&search.graph) {
+                    if let Some((canonical_mode, _)) = self.egraph.canonicalize_path(&path_modes) {
+                        let next_eid = self.tr_counter.wrapping_mul(0xFFFF) ^ 0x7000_0000;
+                        if let Some(shortcut) = self.graphica.try_emit_shortcut(
+                            &cache_key, src, dst, canonical_mode, &path_weights, next_eid,
+                        ) {
+                            log::debug!(
+                                "Shortcut: {:?}→{:?} mode={:?} w={:.3} canon={:?}",
+                                src, dst, canonical_mode, shortcut.weight, shortcut.canonical_id,
+                            );
+                            if let Some(ref mut lg) = self.last_graph {
+                                if let (Some(si), Some(di)) = (
+                                    lg.node_indices().find(|&i| lg[i].id == src),
+                                    lg.node_indices().find(|&i| lg[i].id == dst),
+                                ) {
+                                    lg.add_edge(si, di, shortcut);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ── 7. Progressive deepening + generation ─────────────────────────────
@@ -660,6 +693,35 @@ impl Engine {
         self.counterfactual.record_dissolved_tr(tr_id, trd_id, quality, edge_ids.clone());
         edge_ids
     }
+}
+
+fn dominant_path(
+    graph: &crate::arg::search::ArgGraph,
+) -> Option<(
+    crate::types::NodeId,
+    crate::types::NodeId,
+    Vec<(crate::types::ModalMode, crate::types::TypeCategory)>,
+    Vec<f32>,
+)> {
+    use petgraph::visit::EdgeRef;
+    let mut edges: Vec<_> = graph.edge_references()
+        .map(|er| (er.source(), er.target(),
+                   graph[er.id()].modal_mode,
+                   graph[er.source()].mtlg_type.category,
+                   graph[er.id()].weight))
+        .collect();
+    edges.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+
+    for &(src_idx, mid_idx, m1, c1, w1) in &edges {
+        if let Some(&(_, dst_idx, m2, c2, w2)) = edges.iter().find(|e| e.0 == mid_idx) {
+            return Some((
+                graph[src_idx].id, graph[dst_idx].id,
+                vec![(m1, c1), (m2, c2)],
+                vec![w1, w2],
+            ));
+        }
+    }
+    None
 }
 
 impl Default for Engine { fn default() -> Self { Self::new() } }

@@ -88,13 +88,28 @@ impl ArgEGraph {
         Self {
             egraph:   EGraph::new(ModalAnalysis),
             rewrites: vec![
-                // Beta reduction: (lam x body)[arg/x] → body  (simplified; full subst needed)
-                // Commutativity of eq
-                egg::rewrite!("eq-comm"; "(eq ?a ?b)" => "(eq ?b ?a)"),
-                // Identity: (d-app f x) where f is identity-typed → x
-                // (mode-preserving: only diamond-mode)
+                // Existing
+                egg::rewrite!("eq-comm";     "(eq ?a ?b)"             => "(eq ?b ?a)"),
                 egg::rewrite!("eta-diamond"; "(d-app (lam ?x ?x) ?a)" => "?a"),
                 egg::rewrite!("eta-box";     "(b-app (lam ?x ?x) ?a)" => "?a"),
+
+                // Knuth-Bendix modal composition — ordering: ◊ > □ > ◇
+                egg::rewrite!("kb-box-outer-absorbs-diamond";
+                    "(b-app (d-app ?f ?x) ?y)" => "(b-app ?f ?y)"),
+                egg::rewrite!("kb-inner-box-propagates";
+                    "(d-app (b-app ?f ?x) ?y)" => "(b-app ?f ?y)"),
+                egg::rewrite!("kb-box-idempotent";
+                    "(b-app (b-app ?f ?x) ?y)" => "(b-app ?f ?y)"),
+                egg::rewrite!("kb-lozenge-outer-absorbs-diamond";
+                    "(l-app (d-app ?f ?x) ?y)" => "(l-app ?f ?y)"),
+                egg::rewrite!("kb-lozenge-outer-absorbs-box";
+                    "(l-app (b-app ?f ?x) ?y)" => "(l-app ?f ?y)"),
+                egg::rewrite!("kb-inner-lozenge-through-diamond";
+                    "(d-app (l-app ?f ?x) ?y)" => "(l-app ?f ?y)"),
+                egg::rewrite!("kb-inner-lozenge-through-box";
+                    "(b-app (l-app ?f ?x) ?y)" => "(l-app ?f ?y)"),
+                egg::rewrite!("kb-lozenge-idempotent";
+                    "(l-app (l-app ?f ?x) ?y)" => "(l-app ?f ?y)"),
             ],
         }
     }
@@ -129,6 +144,27 @@ impl ArgEGraph {
     pub fn modal_data(&self, id: Id) -> &ModalData {
         &self.egraph[id].data
     }
+
+    /// Knuth-Bendix normal form for a sequence of modal modes.
+    /// Priority: ◊ > □ > ◇. Returns None for paths shorter than 2 hops.
+    pub fn canonicalize_path(
+        &mut self,
+        path: &[(crate::types::ModalMode, crate::types::TypeCategory)],
+    ) -> Option<(crate::types::ModalMode, crate::types::TypeCategory)> {
+        use crate::types::ModalMode;
+        if path.len() < 2 { return None; }
+        let canonical_mode = path.iter().fold(ModalMode::Diamond, |acc, &(m, _)| {
+            match (acc, m) {
+                (ModalMode::Lozenge, _) | (_, ModalMode::Lozenge) => ModalMode::Lozenge,
+                (ModalMode::Box, _)    | (_, ModalMode::Box)      => ModalMode::Box,
+                _                                                   => ModalMode::Diamond,
+            }
+        });
+        let canonical_cat = path.iter().map(|&(_, c)| c)
+            .find(|c| c.is_assigned())
+            .unwrap_or(crate::types::TypeCategory::DEFAULT);
+        Some((canonical_mode, canonical_cat))
+    }
 }
 
 impl Default for ArgEGraph {
@@ -151,5 +187,42 @@ mod tests {
         let y_id = eg.add(y);
         eg.saturate();
         assert!(eg.equivalent(id, y_id));
+    }
+
+    #[test]
+    fn kb_box_absorbs_diamond() {
+        let mut eg = ArgEGraph::new();
+        let l = eg.add("(b-app (d-app f x) y)".parse().unwrap());
+        let s = eg.add("(b-app f y)".parse().unwrap());
+        eg.saturate();
+        assert!(eg.equivalent(l, s));
+    }
+    #[test]
+    fn kb_lozenge_dominates_all() {
+        let mut eg = ArgEGraph::new();
+        let l = eg.add("(l-app (b-app (d-app f x) y) z)".parse().unwrap());
+        let s = eg.add("(l-app f z)".parse().unwrap());
+        eg.saturate();
+        assert!(eg.equivalent(l, s));
+    }
+    #[test]
+    fn canonicalize_box_wins() {
+        use crate::types::{ModalMode, TypeCategory};
+        let mut eg = ArgEGraph::new();
+        let (mode, _) = eg.canonicalize_path(&[
+            (ModalMode::Diamond, TypeCategory::DEFAULT),
+            (ModalMode::Box,     TypeCategory::DEFAULT),
+        ]).unwrap();
+        assert_eq!(mode, ModalMode::Box);
+    }
+    #[test]
+    fn canonicalize_lozenge_wins() {
+        use crate::types::{ModalMode, TypeCategory};
+        let mut eg = ArgEGraph::new();
+        let (mode, _) = eg.canonicalize_path(&[
+            (ModalMode::Box,     TypeCategory::DEFAULT),
+            (ModalMode::Lozenge, TypeCategory::DEFAULT),
+        ]).unwrap();
+        assert_eq!(mode, ModalMode::Lozenge);
     }
 }
