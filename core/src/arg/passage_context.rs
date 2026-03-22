@@ -165,6 +165,14 @@ impl PassageContext {
             self.edge_map.entry(e.id).or_insert_with(|| e.clone());
         }
 
+        // Suppress the selected node so the next decode step picks a different one.
+        // Without this, VocabDistribution is static (attribution_score never changes)
+        // and argmax always returns the same node, causing the repetition check to
+        // fire on the second iteration — producing only 1-token outputs.
+        if let Some(node) = self.node_map.get_mut(&predicted_id) {
+            node.attribution_score = f32::NEG_INFINITY;
+        }
+
         // Sequential edge: same logic as training.
         if let Some(prev) = prev_node_id {
             let seq_id = sequential_edge_id(prev, predicted_id);

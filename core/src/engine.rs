@@ -188,7 +188,10 @@ impl Engine {
 
         // ── 8. Generate surface output ────────────────────────────────────────
         let decode_trd = trd.unwrap_or(0);
-        let decoded_ids = self.decode(&node_pool_snapshot, &edge_pool_snapshot, decode_trd, 32);
+        let decoded_ids = self.decode_with_thresholds(
+            &node_pool_snapshot, &edge_pool_snapshot,
+            decode_trd, 32, theta_alpha, theta_rho,
+        );
 
         let surface_output = if decoded_ids.is_empty() {
             // No confident prediction. Return the raw hypothesis root as a last resort.
@@ -475,6 +478,9 @@ impl Engine {
     /// - The last two selected nodes are identical (repetition = done).
     ///
     /// Returns the sequence of selected NodeIds in emission order.
+    /// Convenience wrapper that looks up thresholds from the registry.
+    /// Callers that already have thresholds should use `decode_with_thresholds`
+    /// to avoid registry side-effects (e.g. creating a TRD 0 entry).
     pub fn decode(
         &mut self,
         seed_nodes: &[ArgNode],
@@ -482,9 +488,26 @@ impl Engine {
         trd:        TRDId,
         max_tokens: usize,
     ) -> Vec<NodeId> {
-        let active_env  = self.context_stack.current_env();
         let theta_alpha = self.thresholds.theta_alpha(trd);
         let theta_rho   = self.thresholds.theta_rho(trd);
+        self.decode_with_thresholds(seed_nodes, seed_edges, trd, max_tokens, theta_alpha, theta_rho)
+    }
+
+    /// Decode a sequence of tokens using explicitly provided thresholds.
+    ///
+    /// This avoids the threshold registry lookup, ensuring decode uses the
+    /// same thresholds as the caller (important when trd is None and the
+    /// caller uses hardcoded defaults like 0.4/0.38).
+    pub fn decode_with_thresholds(
+        &self,
+        seed_nodes:  &[ArgNode],
+        seed_edges:  &[ArgEdge],
+        trd:         TRDId,
+        max_tokens:  usize,
+        theta_alpha: f64,
+        theta_rho:   f64,
+    ) -> Vec<NodeId> {
+        let active_env  = self.context_stack.current_env();
 
         let mut passage = PassageContext::new(trd);
 
