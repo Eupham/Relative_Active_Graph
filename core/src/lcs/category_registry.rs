@@ -18,8 +18,9 @@ pub struct CategoryEntry {
 
 /// Registry: ID → entry.
 ///
-/// Prototype IDs 1–6 are pre-populated with structural role labels.
-/// IDs 7+ are discovered clusters from the bootstrap CategoryInducer.
+/// Starts empty. All category IDs are assigned by the bootstrap CategoryInducer.
+/// ID 0 is reserved for TypeCategory::DEFAULT (unassigned). IDs 1+ are opaque
+/// cluster IDs — none carry linguistic names.
 pub struct CategoryRegistry {
     entries: HashMap<u32, CategoryEntry>,
     next_id: u32,
@@ -27,24 +28,8 @@ pub struct CategoryRegistry {
 
 impl CategoryRegistry {
     pub fn new() -> Self {
-        let mut reg = Self { entries: HashMap::new(), next_id: 7 };
-        // Seed the six structural prototypes (empty centroids; filled by bootstrap).
-        for (id, label) in &[
-            (1u32, "Process"),
-            (2u32, "Connector"),
-            (3u32, "Ground"),
-            (4u32, "Adverbial"),
-            (5u32, "State"),
-            (6u32, "Participant"),
-        ] {
-            reg.entries.insert(*id, CategoryEntry {
-                id:       TypeCategory(*id),
-                centroid: vec![],
-                label:    label.to_string(),
-                count:    0,
-            });
-        }
-        reg
+        // Start from 1; 0 is reserved for TypeCategory::DEFAULT.
+        Self { entries: HashMap::new(), next_id: 1 }
     }
 
     /// Register a discovered cluster centroid and return its assigned TypeCategory.
@@ -108,27 +93,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prototype_ids_pre_seeded() {
+    fn registry_starts_empty() {
         let reg = CategoryRegistry::new();
-        for id in 1u32..=6 {
-            assert!(reg.get(TypeCategory(id)).is_some(), "prototype {} should be pre-seeded", id);
-        }
+        assert!(reg.is_empty(), "registry must start with no entries");
+        assert_eq!(reg.len(), 0);
     }
 
     #[test]
     fn register_returns_new_id() {
         let mut reg = CategoryRegistry::new();
-        let cat = reg.register(vec![0.1, 0.2], "test".into(), 10);
-        assert!(cat.id() >= 7);
+        let cat = reg.register(vec![0.1, 0.2], "cluster_1".into(), 10);
+        assert!(cat.id() >= 1, "first cluster ID must be >= 1");
         assert!(reg.get(cat).is_some());
     }
 
     #[test]
     fn nearest_finds_closest_centroid() {
         let mut reg = CategoryRegistry::new();
-        reg.update_centroid(TypeCategory(1), vec![1.0, 0.0], 100);
-        reg.update_centroid(TypeCategory(6), vec![0.0, 1.0], 50);
+        let c1 = reg.register(vec![1.0, 0.0], "cluster_1".into(), 100);
+        let c2 = reg.register(vec![0.0, 1.0], "cluster_2".into(), 50);
         let result = reg.nearest(&[0.9, 0.1]);
-        assert_eq!(result, TypeCategory(1));
+        assert_eq!(result, c1);
+        let result2 = reg.nearest(&[0.1, 0.9]);
+        assert_eq!(result2, c2);
     }
 }

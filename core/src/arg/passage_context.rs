@@ -5,8 +5,19 @@
 
 use std::collections::HashMap;
 use crate::types::{NodeId, EdgeId, TRDId};
-use crate::arg::{ArgSearch, ArgNode, ArgEdge};
-use crate::types::Env;
+use crate::arg::{ArgSearch, ArgNode, ArgEdge, EdgeClass};
+use crate::types::{Env, ModalMode};
+
+/// FNV-1a over the ordered pair (src, dst) with a class-marker XOR.
+/// Keeps sequential edge IDs in a distinct space from structural edges.
+pub fn sequential_edge_id(src: NodeId, dst: NodeId) -> EdgeId {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME:  u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for &b in &src.to_le_bytes() { h = h.wrapping_mul(FNV_PRIME) ^ b as u64; }
+    for &b in &dst.to_le_bytes() { h = h.wrapping_mul(FNV_PRIME) ^ b as u64; }
+    h ^ 0x6000_0000_0000_0000u64
+}
 
 /// Accumulated CE signal across one passage.
 pub struct PassageSignal {
@@ -58,6 +69,50 @@ impl PassageContext {
             edge_map:       HashMap::new(),
             sentence_count: 0,
         }
+    }
+
+    /// Add one token to the accumulated graph and return the `ArgSearch`
+    /// representing the state *before* this token was added.
+    ///
+    /// The returned search is used to compute `VocabDistribution` for this step:
+    /// the model predicts the current token from all prior context.
+    /// Only after prediction is this token committed to the context graph.
+    ///
+    /// Also creates a SEQUENTIAL edge from `prev_node_id` to
+    /// `expected_node_id`, establishing bigram position signal.
+    pub fn step(
+        &mut self,
+        expected_node_id: NodeId,
+        node_pool:        &[ArgNode],
+        edge_pool:        &[ArgEdge],
+        active_env:       Env,
+        theta_alpha:      f64,
+        theta_rho:        f64,
+        prev_node_id:     Option<NodeId>,
+    ) -> ArgSearch {
+        // Snapshot current context for prediction (before adding this token).
+        let search = self.build_graph(active_env, theta_alpha, theta_rho);
+
+        // Commit this token's nodes and edges to the accumulated context.
+        for n in node_pool {
+            self.node_map.entry(n.id).or_insert_with(|| n.clone());
+        }
+        for e in edge_pool {
+            self.edge_map.entry(e.id).or_insert_with(|| e.clone());
+        }
+
+        // Sequential edge from previous token to this token.
+        if let Some(prev) = prev_node_id {
+            let seq_id = sequential_edge_id(prev, expected_node_id);
+            let seq_edge = ArgEdge::new(
+                seq_id, prev, expected_node_id,
+                EdgeClass::SEQUENTIAL, ModalMode::Diamond,
+            );
+            self.edge_map.entry(seq_id).or_insert(seq_edge);
+        }
+
+        self.sentence_count += 1;
+        search
     }
 
     /// Add all nodes and edges from a sentence's pools.

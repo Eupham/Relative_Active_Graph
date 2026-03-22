@@ -1,8 +1,13 @@
 """
-c4_sequence_extractor.py — Extract token sequences from mC4 for teacher forcing.
+c4_sequence_extractor.py — Extract token sequences from mC4 for self-supervised
+teacher forcing.
 
 Streams the mC4 dataset, runs UD parsing, and produces (sentence, ud_tree) pairs
 suitable for the sequential trainer. Integrates with the existing mc4_stream.py.
+
+This module implements self-supervised teacher forcing (as in GPT pre-training):
+the text provides its own labels via _stable_node_id(lemma).  No external
+supervision or hard-coded grammar rules are used.
 """
 from __future__ import annotations
 
@@ -161,11 +166,19 @@ def stream_c4_sequences(
     language: str = "en",
     trd_assignments: Optional[dict[str, int]] = None,
     max_sentences: int = 10_000,
+    use_stanza: bool = True,
 ) -> Iterator[TokenSequence]:
     """
-    Stream token sequences from mC4 via mc4_stream.py.
+    Stream self-supervised teacher-forcing sequences from mC4 via mc4_stream.py.
+
+    Each token in the stream provides its own label via `_stable_node_id(lemma)`,
+    following the self-supervised teacher-forcing paradigm (as in GPT pre-training).
 
     `trd_assignments`: maps sentence hash → TRD ID (optional; defaults to 0).
+    `use_stanza`: when True (default), run the full Stanza UD pipeline for
+        structural features.  When False, use the stub flat-tree fallback
+        (for offline tests only; stub trees provide no deprel structure for
+        the inducer to work with).
     """
     try:
         import sys
@@ -186,14 +199,18 @@ def stream_c4_sequences(
         for sentence_text in _split_sentences(text):
             if count >= max_sentences:
                 break
-            tree = _stub_tree(sentence_text, language)
             trd_id = 0
             if trd_assignments:
                 key = sentence_text[:32]
                 trd_id = trd_assignments.get(key, 0)
-            seq = extract_sequence(tree, trd_id=trd_id)
-            yield seq
-            count += 1
+            # Use full Stanza UD pipeline for structural deprel features.
+            trees = parse_ud_trees([sentence_text], language=language, use_stanza=use_stanza)
+            for tree in trees:
+                seq = extract_sequence(tree, trd_id=trd_id)
+                yield seq
+                count += 1
+                if count >= max_sentences:
+                    break
 
 
 def _split_sentences(text: str, max_len: int = 200) -> list[str]:

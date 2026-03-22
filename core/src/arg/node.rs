@@ -35,6 +35,12 @@ pub struct ArgNode {
     pub attribution_score: f32,
     pub mtlg_type:         ModalType,
     pub trd_membership:    Vec<TRDId>,
+    /// Sequential step at which this node was last activated (0 = never).
+    /// Reserved for future recency-weighting; not yet used in computation.
+    pub last_activated_step: u64,
+    /// Number of times this node has been activated across all passages.
+    /// Reserved for future recency-weighting; not yet used in computation.
+    pub activation_count:    u32,
 }
 
 impl ArgNode {
@@ -43,6 +49,7 @@ impl ArgNode {
             id, node_class, surface: None, activation_infon,
             atms_label: 0, depth: 0.0, attribution_score: 0.5,
             mtlg_type, trd_membership: Vec::new(),
+            last_activated_step: 0, activation_count: 0,
         }
     }
 

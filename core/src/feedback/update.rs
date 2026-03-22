@@ -115,6 +115,26 @@ pub fn propagate_attribution_backward(
     }
 }
 
+/// Recompute a node's `attribution_score` from the mean of its incoming edge weights.
+///
+/// Called after the passage-level attribution flush, for every node that received
+/// updated incoming edges. This propagates edge-level learning into node activation
+/// scores so the softmax distribution reflects accumulated training signal.
+///
+/// Nodes with no incoming edges retain their current `attribution_score`.
+/// Isolated or seed nodes have score 0.5 as the correct neutral prior.
+pub fn propagate_edge_to_node_scores(graph: &mut ArgGraph, node_id: NodeId) {
+    let Some(ni) = graph.node_indices().find(|&i| graph[i].id == node_id) else { return };
+    let incoming: Vec<f32> = graph.edge_indices()
+        .filter(|&ei| graph[ei].dst == node_id)
+        .map(|ei| graph[ei].weight)
+        .collect();
+    if !incoming.is_empty() {
+        graph[ni].attribution_score =
+            incoming.iter().sum::<f32>() / incoming.len() as f32;
+    }
+}
+
 /// Apply negative attribution to all incoming edges of nodes whose ATMS labels
 /// have become inconsistent due to a newly added NOGOOD.
 ///
