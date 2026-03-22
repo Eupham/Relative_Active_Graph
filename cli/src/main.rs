@@ -153,6 +153,12 @@ fn main() -> Result<()> {
             }
             Ok(WireMessage::RegisterLexicon(entry)) => {
                 log::info!("Registered lexicon: {} → {} ({})", entry.predicate, entry.surface, entry.language);
+                engine.global_lexicon.insert(entry.predicate.clone(), csrre_core::generation::LexEntry {
+                    predicate: entry.predicate,
+                    language: entry.language,
+                    surface: entry.surface,
+                    modal_type: ModalType::default(),
+                });
             }
             Ok(WireMessage::Shutdown) => {
                 log::info!("Received shutdown.");

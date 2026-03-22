@@ -172,7 +172,12 @@ impl Engine {
         let dr = deepener.run(graph, &self.semantics, &self.perf, &mut self.thresholds, &query.text, &query.expected_type);
 
         // ── 8. Linearize best hypothesis ──────────────────────────────────────
-        let linearizer     = Linearizer::new(&query.target_language);
+        let mut linearizer = Linearizer::new(&query.target_language);
+        // Inject global lexicon maps for testing
+        for entry in self.global_lexicon.values() {
+            linearizer.lexicon.register(entry.clone());
+        }
+
         let surface_output = dr.hypotheses.first()
             .map(|h| linearizer.linearize(h))
             .unwrap_or_else(|| format!("[no hypothesis for '{}']", query.text));
