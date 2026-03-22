@@ -16,34 +16,43 @@ UCCA categories are assigned based on UD UPOS and deprel:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Optional
 
 from ud_parser import UdToken, UdTree, UD_CORE_DEPS, UD_NONCORE_DEPS, REENTRANT_RELATIONS
 
-ModalModeStr  = Literal["diamond", "box", "lozenge"]
-UccaCategory  = Literal["Scene", "Process", "State", "Participant",
-                         "Adverbial", "Connector", "Ground"]
+ModalModeStr = str  # "diamond" | "box" | "lozenge"
+
+# Category IDs (mirror Rust TypeCategory constants):
+#   0 = DEFAULT/unassigned, 1 = Process, 2 = Connector, 3 = Ground,
+#   4 = Adverbial, 5 = State, 6 = Participant
+CATEGORY_DEFAULT     = 0
+CATEGORY_PROCESS     = 1
+CATEGORY_CONNECTOR   = 2
+CATEGORY_GROUND      = 3
+CATEGORY_ADVERBIAL   = 4
+CATEGORY_STATE       = 5
+CATEGORY_PARTICIPANT = 6
 
 
 @dataclass
 class MtlgEdge:
-    src_id:     int
-    dst_id:     int
-    deprel:     str
-    modal_mode: ModalModeStr
-    ucca_cat:   UccaCategory
-    arity:      int   # remaining args for functor type (0 = saturated)
+    src_id:      int
+    dst_id:      int
+    deprel:      str
+    modal_mode:  ModalModeStr
+    category_id: int           # TypeCategory numeric ID
+    arity:       int           # remaining args for functor type (0 = saturated)
 
 
 @dataclass
 class MtlgNode:
-    token_id:   int
-    text:       str
-    lemma:      str
-    upos:       str
-    modal_mode: ModalModeStr
-    ucca_cat:   UccaCategory
-    arity:      int
+    token_id:    int
+    text:        str
+    lemma:       str
+    upos:        str
+    modal_mode:  ModalModeStr
+    category_id: int
+    arity:       int
 
 
 @dataclass
@@ -53,23 +62,23 @@ class MtlgGraph:
     language: str
 
 
-def assign_ucca_category(tok: UdToken) -> UccaCategory:
-    """Assign UCCA category from UPOS and deprel."""
+def assign_ucca_category(tok: UdToken) -> int:
+    """Assign UCCA category ID from UPOS and deprel (structural evidence only)."""
     upos   = tok.upos.upper()
     deprel = tok.deprel.lower()
     if upos == "VERB" or deprel in ("root", "ccomp", "xcomp", "advcl", "csubj"):
-        return "Process"
+        return CATEGORY_PROCESS
     if upos in ("NOUN", "PROPN", "PRON") and deprel in UD_CORE_DEPS:
-        return "Participant"
+        return CATEGORY_PARTICIPANT
     if upos in ("ADJ", "AUX") and deprel in ("amod", "cop", "aux"):
-        return "State"
+        return CATEGORY_STATE
     if deprel in ("advmod", "obl"):
-        return "Adverbial"
+        return CATEGORY_ADVERBIAL
     if deprel in ("cc", "mark", "punct"):
-        return "Connector"
+        return CATEGORY_CONNECTOR
     if deprel in ("discourse", "vocative"):
-        return "Ground"
-    return "Scene"
+        return CATEGORY_GROUND
+    return CATEGORY_DEFAULT
 
 
 def assign_modal_mode(tok: UdToken, deprel: str) -> ModalModeStr:
@@ -100,7 +109,7 @@ def ud_tree_to_mtlg(tree: UdTree) -> MtlgGraph:
         arity      = compute_functor_arity(tok, tree)
         nodes.append(MtlgNode(
             token_id=tok.id, text=tok.text, lemma=tok.lemma,
-            upos=tok.upos, modal_mode=modal_mode, ucca_cat=ucca_cat, arity=arity,
+            upos=tok.upos, modal_mode=modal_mode, category_id=ucca_cat, arity=arity,
         ))
 
     edges = []
@@ -114,7 +123,7 @@ def ud_tree_to_mtlg(tree: UdTree) -> MtlgGraph:
         modal_mode = assign_modal_mode(tok, tok.deprel)
         edges.append(MtlgEdge(
             src_id=tok.head, dst_id=tok.id, deprel=tok.deprel,
-            modal_mode=modal_mode, ucca_cat=ucca_cat,
+            modal_mode=modal_mode, category_id=ucca_cat,
             arity=compute_functor_arity(head_tok, tree),
         ))
 
@@ -131,5 +140,5 @@ if __name__ == "__main__":
     for edge in mtlg.edges:
         print(json.dumps({
             "src": edge.src_id, "dst": edge.dst_id,
-            "deprel": edge.deprel, "mode": edge.modal_mode, "ucca": edge.ucca_cat,
+            "deprel": edge.deprel, "mode": edge.modal_mode, "category_id": edge.category_id,
         }))

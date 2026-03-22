@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn rule_induced_after_observations() {
         let mut ruler = RulerBridge::new();
-        let ty = ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right);
+        let ty = ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right);
 
         // Simulate 10 dissolved TRs with this type transformation, all successful.
         for i in 0..10 {

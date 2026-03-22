@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory, Env, Direction};
-use crate::arg::{ArgGraph, ArgNode, search::ArgSearch};
+use crate::arg::{ArgGraph, ArgNode, NodeClass, search::ArgSearch};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::adaptive::PerfRegistry;
 use petgraph::visit::EdgeRef;
@@ -106,14 +106,14 @@ pub fn filter_satisfying(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::{ArgNode, NodeType};
+    use crate::arg::{ArgNode, NodeClass};
     use crate::types::{ModalType, ModalMode, TypeCategory, Direction};
     use petgraph::stable_graph::StableGraph;
     use crate::arg::search::ArgGraph;
 
     fn node(id: u64, surface: &str, score: f32) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept,
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right), (0,0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT,
+            ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right), (0,0));
         n.surface = Some(surface.as_bytes().to_vec());
         n.attribution_score = score;
         n.atms_label = 0b1;
@@ -144,9 +144,9 @@ mod tests {
         let mut type_map = HashMap::new();
         type_map.insert(
             "run".into(),
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+            ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
         );
-        let expected = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+        let expected = ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT);
         let satisfying = filter_satisfying(hyps, &expected, &type_map);
         assert!(!satisfying.is_empty(), "run should satisfy a Scene query");
     }
@@ -163,10 +163,10 @@ mod tests {
         let mut type_map = HashMap::new();
         type_map.insert(
             "run".into(),
-            ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+            ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
         );
         // Query expects Box mode — run is Diamond mode — should be rejected.
-        let expected = ModalType::atom(ModalMode::Box, TypeCategory::Scene);
+        let expected = ModalType::atom(ModalMode::Box, TypeCategory::DEFAULT);
         let satisfying = filter_satisfying(hyps, &expected, &type_map);
         assert!(satisfying.is_empty(), "mode mismatch should not satisfy");
     }

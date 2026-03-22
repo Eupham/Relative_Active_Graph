@@ -124,9 +124,9 @@ mod tests {
     #[test]
     fn correlational_score_correct() {
         let mut engine = AttributionEngine::new(42);
-        engine.record(1, 0, Quality::Good, &[10]);
-        engine.record(2, 0, Quality::Good, &[10]);
-        engine.record(3, 0, Quality::Bad,  &[10]);
+        engine.record(1, 0, Quality::GOOD, &[10]);
+        engine.record(2, 0, Quality::GOOD, &[10]);
+        engine.record(3, 0, Quality::BAD,  &[10]);
         let g: ArgGraph = petgraph::stable_graph::StableGraph::new();
         let attr = engine.compute(10, 0, &g);
         // 2 good (1.0) + 1 bad (0.0) = 2/3 ≈ 0.667

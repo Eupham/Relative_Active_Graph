@@ -77,12 +77,12 @@ pub fn priority_order(graph: &ArgGraph) -> Vec<(NodeId, f32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::{ArgNode, NodeType, ArgEdge, EdgeType};
+    use crate::arg::{ArgNode, NodeClass, ArgEdge, EdgeClass};
     use crate::types::{ModalType, ModalMode, TypeCategory};
     use petgraph::stable_graph::StableGraph;
 
     fn node(id: u64, depth: f32) -> ArgNode {
-        let mut n = ArgNode::new(id, NodeType::Concept, ModalType::default(), (0,0));
+        let mut n = ArgNode::new(id, NodeClass::DEFAULT, ModalType::default(), (0,0));
         n.depth = depth;
         n.atms_label = 0b1;
         n
@@ -94,8 +94,8 @@ mod tests {
         let a = g.add_node(node(1, 1.0));
         let b = g.add_node(node(2, 1.0));
         let c = g.add_node(node(3, 1.0));
-        g.add_edge(a, b, ArgEdge::new(1, 1, 2, EdgeType::Dependency, ModalMode::Diamond));
-        g.add_edge(b, c, ArgEdge::new(2, 2, 3, EdgeType::Dependency, ModalMode::Diamond));
+        g.add_edge(a, b, ArgEdge::new(1, 1, 2, EdgeClass::DEFAULT, ModalMode::Diamond));
+        g.add_edge(b, c, ArgEdge::new(2, 2, 3, EdgeClass::DEFAULT, ModalMode::Diamond));
 
         let b_levels = compute_b_levels(&g);
         // a → b → c: b_level(a) > b_level(b) > b_level(c)

@@ -56,9 +56,9 @@ mod tests {
             id:       1,
             name:     "test".into(),
             lhs_mode: ModalMode::Diamond,
-            lhs_cat:  TypeCategory::Scene,
+            lhs_cat:  TypeCategory::DEFAULT,
             rhs_mode: if same_mode { ModalMode::Diamond } else { ModalMode::Box },
-            rhs_cat:  TypeCategory::Process,
+            rhs_cat:  TypeCategory(1),
             confidence,
             support:  10,
         }
@@ -75,7 +75,7 @@ mod tests {
         let rule  = make_rule(0.9, true);
         let state = make_state(&rule);
         let mut perf = PerfRegistry::new(0.25);
-        for _ in 0..10 { perf.update(0, Quality::Good); }
+        for _ in 0..10 { perf.update(0, Quality::GOOD); }
         assert!(should_apply(&rule, &state, 0, &perf));
     }
 
@@ -84,7 +84,7 @@ mod tests {
         let rule  = make_rule(0.7, true);
         let state = make_state(&rule);
         let mut perf = PerfRegistry::new(0.25);
-        for _ in 0..10 { perf.update(0, Quality::Bad); }
+        for _ in 0..10 { perf.update(0, Quality::BAD); }
         assert!(!should_apply(&rule, &state, 0, &perf));
     }
 }

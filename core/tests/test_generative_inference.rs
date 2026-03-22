@@ -2,15 +2,15 @@ use csrre_core::generation::hypothesis::{Hypothesis, generate_hypotheses, filter
 use csrre_core::generation::linearizer::{Linearizer, LexEntry, PerLanguageLexicon};
 use csrre_core::semantics::mtlg_semantics::{MtlgSemantics, PropositionGraph};
 use csrre_core::types::{ModalType, ModalMode, TypeCategory, Direction};
-use csrre_core::arg::{ArgGraph, ArgNode, NodeType};
+use csrre_core::arg::{ArgGraph, ArgNode, NodeClass};
 use petgraph::stable_graph::StableGraph;
 use std::collections::HashMap;
 
 fn create_mock_node(id: u64, surface: &str, score: f32) -> ArgNode {
     let mut n = ArgNode::new(
         id,
-        NodeType::Concept,
-        ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+        NodeClass::DEFAULT,
+        ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
         (0, 0),
     );
     n.surface = Some(surface.as_bytes().to_vec());
@@ -26,11 +26,11 @@ fn test_generative_inference_pipeline() {
     let mut type_map = HashMap::new();
     type_map.insert(
         "run".into(),
-        ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+        ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
     );
     type_map.insert(
         "alice".into(),
-        ModalType::atom(ModalMode::Diamond, TypeCategory::Participant),
+        ModalType::atom(ModalMode::Diamond, TypeCategory(6)),
     );
 
     let mut linearizer = Linearizer::new("en");
@@ -38,13 +38,13 @@ fn test_generative_inference_pipeline() {
         predicate: "run".into(),
         language: "en".into(),
         surface: "runs".into(),
-        modal_type: ModalType::functor(ModalMode::Diamond, TypeCategory::Scene, 1, Direction::Right),
+        modal_type: ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right),
     });
     linearizer.lexicon.register(LexEntry {
         predicate: "alice".into(),
         language: "en".into(),
         surface: "Alice".into(),
-        modal_type: ModalType::atom(ModalMode::Diamond, TypeCategory::Participant),
+        modal_type: ModalType::atom(ModalMode::Diamond, TypeCategory(6)),
     });
 
     // 2. Build mock ARG Graph
@@ -69,7 +69,7 @@ fn test_generative_inference_pipeline() {
     };
 
     // 3. Test Type-Filtering (Satisfiability)
-    let expected_type = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+    let expected_type = ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT);
     let satisfying_hyps = filter_satisfying(vec![hypothesis.clone()], &expected_type, &type_map);
     assert_eq!(satisfying_hyps.len(), 1, "Hypothesis must satisfy the query constraint");
 

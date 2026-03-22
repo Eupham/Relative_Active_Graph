@@ -1,5 +1,4 @@
 //! Shared primitive types for CSRRE.
-//! Everything here is Copy-sized so it can cross module boundaries cheaply.
 
 use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
@@ -10,53 +9,54 @@ pub type NodeId    = u64;
 pub type EdgeId    = u64;
 pub type ContextId = u64;
 pub type TRDId     = u32;
-/// ATMS environment: bitvector over assumption bits (up to 64 concurrent situations).
 pub type Env       = u64;
 pub type InfonId   = u64;
 
-// ─── Modal type system (MTLG) ────────────────────────────────────────────────
+// ─── Modal mode (mathematical constant from MTLG) ─────────────────────────────
 
-/// Three modal modes from MTLG: ◇ (primary/linear), □ (shared/contraction), ◊ (discontinuous).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModalMode {
-    Diamond,  // ◇  primary composition — tree-forming, linear resource use
-    Box,      // □  shared composition  — contraction permitted, DAG-forming
-    Lozenge,  // ◊  discontinuous       — displacement calculus, scope/long-range
+    Diamond,  // ◇  primary composition — tree-forming, linear
+    Box,      // □  shared composition  — contraction, DAG-forming
+    Lozenge,  // ◊  discontinuous       — displacement calculus
 }
 
-/// Argument directionality in the type-logical grammar.
-///
-/// In MTLG, `A/B` (Right) means the functor seeks its B argument to the right.
-/// `A\B` (Left) means the functor seeks its B argument to the left.
-/// These are distinct type constructors with distinct sequent calculus rules
-/// (Moot & Retoré 2012 §2). A boolean is insufficient: it hides the semantic
-/// content of the distinction from any reader of the type.
+// ─── Direction (mathematical constant from type-logical grammar) ──────────────
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Direction {
     Right,  // /  — functor seeks argument to the right
     Left,   // \  — functor seeks argument to the left
 }
 
-/// UCCA-grounded semantic categories (typologically stable per BLT universals).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TypeCategory {
-    Scene,
-    Process,
-    State,
-    Participant,
-    Adverbial,
-    Connector,
-    Ground,
+// ─── TypeCategory: runtime-discovered cluster ID ─────────────────────────────
+
+/// Semantic category ID discovered by CategoryInducer bootstrap.
+/// 0 = DEFAULT (unassigned). All other values are assigned at bootstrap time.
+/// No named variants — the system must discover and designate category concepts
+/// from structural evidence, not from pre-specified labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct TypeCategory(pub u32);
+
+impl TypeCategory {
+    pub const DEFAULT: TypeCategory = TypeCategory(0);
+    pub fn id(self) -> u32 { self.0 }
+    pub fn is_assigned(self) -> bool { self.0 != 0 }
 }
 
-/// MTLG modal type: mode ⊗ category ⊗ arity ⊗ direction.
+impl std::fmt::Display for TypeCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cat:{}", self.0)
+    }
+}
+
+// ─── MTLG modal type ─────────────────────────────────────────────────────────
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ModalType {
     pub mode:      ModalMode,
     pub category:  TypeCategory,
-    /// Number of remaining unsaturated arguments (0 = fully saturated atom).
     pub arity:     u8,
-    /// Which side the next argument must come from.
     pub direction: Direction,
 }
 
@@ -76,10 +76,6 @@ impl ModalType {
     }
 
     /// True if this functor can combine with an argument type at the given position.
-    ///
-    /// `arg_is_right` must reflect where the argument sits relative to the functor
-    /// in the actual derivation tree. A right-seeking functor (`Direction::Right`)
-    /// requires `arg_is_right == true`; a left-seeking functor requires false.
     pub fn compatible_with(self, arg: ModalType, arg_is_right: bool) -> bool {
         self.mode == arg.mode
             && self.arity > 0
@@ -91,68 +87,74 @@ impl ModalType {
 }
 
 impl Default for ModalType {
-    fn default() -> Self {
-        Self::atom(ModalMode::Diamond, TypeCategory::Scene)
-    }
+    fn default() -> Self { Self::atom(ModalMode::Diamond, TypeCategory::DEFAULT) }
 }
 
-// ─── Attribution quality ─────────────────────────────────────────────────────
+// ─── Continuous quality signal ────────────────────────────────────────────────
 
-/// Three-point quality signal from dissolved TR evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Quality {
-    Good = 1,   // 1.0
-    Partial = 2, // 0.5
-    Bad = 0,    // 0.0
-}
+/// Quality signal in [0.0, 1.0] from TR dissolution or CE training comparison.
+/// Continuous to support per-position quality from long-output training.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct Quality(pub f32);
 
 impl Quality {
-    pub fn as_f64(self) -> f64 {
-        match self {
-            Quality::Good    => 1.0,
-            Quality::Partial => 0.5,
-            Quality::Bad     => 0.0,
+    pub const GOOD:    Quality = Quality(1.0);
+    pub const PARTIAL: Quality = Quality(0.5);
+    pub const BAD:     Quality = Quality(0.0);
+
+    pub fn new(v: f32) -> Self { Quality(v.clamp(0.0, 1.0)) }
+    pub fn as_f32(self) -> f32  { self.0 }
+    pub fn as_f64(self) -> f64  { self.0 as f64 }
+
+    /// Cross-entropy quality signal.
+    /// `p_predicted`: softmax probability of the token that was generated.
+    /// `was_correct`: whether that token matched ground truth.
+    pub fn from_ce(p_predicted: f32, was_correct: bool) -> Self {
+        if was_correct {
+            Quality::new(1.0 - p_predicted)  // CE gradient ∂L/∂z_correct = p - 1 (inverted)
+        } else {
+            Quality::BAD
         }
+    }
+
+    /// Token overlap for long-output position quality.
+    pub fn token_overlap(generated: &str, expected: &str) -> Quality {
+        let gen: HashSet<&str> = generated.split_whitespace().collect();
+        let exp: Vec<&str>     = expected.split_whitespace().collect();
+        if exp.is_empty() { return Quality::BAD; }
+        let matched = exp.iter().filter(|t| gen.contains(*t)).count();
+        Quality::new(matched as f32 / exp.len() as f32)
     }
 }
 
-// ─── Situation / STO ─────────────────────────────────────────────────────────
+impl Default for Quality { fn default() -> Self { Quality::BAD } }
 
-/// An STO situation: typed partial world.
-///
-/// `active_nodes` is the set of ARG NodeIds anchored in this situation.
-/// An infon σ is supported by s only if all of σ's argument roles are filled
-/// by nodes in `active_nodes` and σ's polarity is positive (Barwise & Perry 1983).
+impl std::fmt::Display for Quality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.4}", self.0)
+    }
+}
+
+// ─── Situation / STO ──────────────────────────────────────────────────────────
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Situation {
     pub id:           u64,
     pub label:        String,
     pub trd:          Option<TRDId>,
-    /// Assumption bit assigned by the ATMS for this situation.
     pub env_bit:      u8,
-    /// NodeIds of ARG nodes anchored in this situation (fills argument roles).
     pub active_nodes: HashSet<NodeId>,
 }
 
 impl Situation {
     pub fn new(id: u64, label: impl Into<String>, env_bit: u8) -> Self {
-        Self {
-            id,
-            label:        label.into(),
-            trd:          None,
-            env_bit,
-            active_nodes: HashSet::new(),
-        }
+        Self { id, label: label.into(), trd: None, env_bit, active_nodes: HashSet::new() }
     }
-
-    pub fn anchor(&mut self, node_id: NodeId) {
-        self.active_nodes.insert(node_id);
-    }
+    pub fn anchor(&mut self, node_id: NodeId) { self.active_nodes.insert(node_id); }
 }
 
 // ─── Infon ────────────────────────────────────────────────────────────────────
 
-/// Infon σ: a typed proposition supported by a situation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Infon {
     pub id:       InfonId,
@@ -161,13 +163,12 @@ pub struct Infon {
     pub polarity: bool,
 }
 
-// ─── Graphica cache key ───────────────────────────────────────────────────────
+// ─── Cache key ────────────────────────────────────────────────────────────────
 
-/// Canonical memoization key: (structural hash, ATMS environment, modal profile).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CacheKey {
-    pub hash:         u64,
-    pub env:          Env,
-    pub modal_mode:   ModalMode,
-    pub modal_cat:    TypeCategory,
+    pub hash:       u64,
+    pub env:        Env,
+    pub modal_mode: ModalMode,
+    pub modal_cat:  TypeCategory,
 }

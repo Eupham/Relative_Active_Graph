@@ -37,15 +37,15 @@ pub struct ModalData {
 
 impl ModalData {
     fn default_data() -> Self {
-        Self { mode: ModalMode::Diamond, category: TypeCategory::Scene }
+        Self { mode: ModalMode::Diamond, category: TypeCategory::DEFAULT }
     }
 
     fn join(a: &mut Self, b: Self) -> DidMerge {
-        // Lattice join: modes must agree; category defaults to Scene on conflict.
+        // Lattice join: modes must agree; category defaults to DEFAULT on conflict.
         let changed_mode = a.mode != b.mode;
         let changed_cat  = a.category != b.category;
         if changed_mode { a.mode = ModalMode::Diamond; }  // conservative default
-        if changed_cat  { a.category = TypeCategory::Scene; }
+        if changed_cat  { a.category = TypeCategory::DEFAULT; }
         DidMerge(changed_mode || changed_cat, changed_mode || changed_cat)
     }
 }
@@ -64,7 +64,7 @@ impl Analysis<MtlgExpr> for ModalAnalysis {
             MtlgExpr::BoxApp([f, _])     => ModalData { mode: ModalMode::Box,     category: cat_of(f) },
             MtlgExpr::LozengeApp([f, _]) => ModalData { mode: ModalMode::Lozenge, category: cat_of(f) },
             MtlgExpr::Pred1([f, _]) | MtlgExpr::Pred2([f, _, _]) => {
-                ModalData { mode: mode_of(f), category: TypeCategory::Scene }
+                ModalData { mode: mode_of(f), category: TypeCategory::DEFAULT }
             }
             MtlgExpr::Lam([_, body]) => ModalData { mode: mode_of(body), category: cat_of(body) },
             _ => ModalData::default_data(),

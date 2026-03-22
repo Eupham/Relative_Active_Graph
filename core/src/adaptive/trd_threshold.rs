@@ -110,9 +110,9 @@ mod tests {
         let mut reg  = ThresholdRegistry::new();
 
         // TRD 0: all good → stable
-        for _ in 0..40 { perf.update(0, Quality::Good); }
+        for _ in 0..40 { perf.update(0, Quality::GOOD); }
         // TRD 1: alternating → noisy
-        for i in 0..40u32 { perf.update(1, if i % 2 == 0 { Quality::Good } else { Quality::Bad }); }
+        for i in 0..40u32 { perf.update(1, if i % 2 == 0 { Quality::GOOD } else { Quality::BAD }); }
 
         reg.get(0);
         reg.get(1);

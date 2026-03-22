@@ -18,16 +18,20 @@ pub struct BaseAtms {
     justifications: Vec<Justification>,
     /// Reverse index: antecedent NodeId → justification indices.
     ant_to_just: HashMap<NodeId, Vec<usize>>,
+    /// Symmetric index: consequent NodeId → justification indices.
+    /// Used by propagate_attribution_backward to trace proof origins.
+    consequent_to_just: HashMap<NodeId, Vec<usize>>,
     pub nogoods:   NogoodTable,
 }
 
 impl BaseAtms {
     pub fn new() -> Self {
         Self {
-            nodes:       HashMap::new(),
-            justifications: Vec::new(),
-            ant_to_just:    HashMap::new(),
-            nogoods:        NogoodTable::new(),
+            nodes:              HashMap::new(),
+            justifications:     Vec::new(),
+            ant_to_just:        HashMap::new(),
+            consequent_to_just: HashMap::new(),
+            nogoods:            NogoodTable::new(),
         }
     }
 
@@ -47,6 +51,11 @@ impl BaseAtms {
         for &ant in &j.antecedents {
             self.ant_to_just.entry(ant).or_default().push(idx);
         }
+        // Symmetric index: consequent → justification.
+        self.consequent_to_just
+            .entry(j.consequent)
+            .or_default()
+            .push(idx);
         // Try to derive immediately.
         let derived_env = self.try_derive(&j);
         self.justifications.push(j);
@@ -112,12 +121,24 @@ impl BaseAtms {
         self.nodes.values()
             .filter(|n| {
                 n.label.map_or(false, |l| {
-                    // Node was active only because of bits in `env`; now those are gone.
                     l & env != 0 && l & !env == 0
                 })
             })
             .map(|n| n.id)
             .collect()
+    }
+
+    /// All antecedent NodeIds for any justification that derives `consequent`.
+    /// Used for backward attribution propagation through the proof graph.
+    pub fn antecedents_of(&self, consequent: NodeId) -> Vec<NodeId> {
+        self.consequent_to_just
+            .get(&consequent)
+            .map(|idxs| {
+                idxs.iter()
+                    .flat_map(|&ji| self.justifications[ji].antecedents.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -153,5 +174,18 @@ mod tests {
         let ng = singleton(0);
         let inconsistent = atms.add_nogood(ng);
         assert!(inconsistent.contains(&1));
+    }
+
+    #[test]
+    fn antecedents_of_works() {
+        let mut atms = BaseAtms::new();
+        atms.add_assumption(1, 0);
+        atms.add_assumption(2, 1);
+        atms.add_derived(3);
+        let j = Justification::new(3, vec![1, 2]);
+        atms.add_justification(j);
+        let ants = atms.antecedents_of(3);
+        assert!(ants.contains(&1));
+        assert!(ants.contains(&2));
     }
 }

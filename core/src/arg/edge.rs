@@ -1,16 +1,15 @@
-//! ARG edge: typed, modal, ATMS-justified.
+//! ARG edge. EdgeClass(u32) replaces the named EdgeType enum.
+//! ModalMode is retained as a mathematical constant.
 
 use serde::{Deserialize, Serialize};
 use crate::types::{NodeId, EdgeId, Env, ModalMode};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EdgeType {
-    Composition,  // MTLG functor-argument application
-    Dependency,   // UD-style syntactic dependency
-    Causal,       // SCM causal edge
-    Equivalence,  // equality saturation equivalence
-    Contextual,   // cross-context lifting
-    Rule,         // rule application edge
+/// Discovered edge class ID from bootstrap clustering. 0 = DEFAULT.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct EdgeClass(pub u32);
+
+impl EdgeClass {
+    pub const DEFAULT: EdgeClass = EdgeClass(0);
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,7 +17,7 @@ pub struct ArgEdge {
     pub id:        EdgeId,
     pub src:       NodeId,
     pub dst:       NodeId,
-    pub edge_type: EdgeType,
+    pub edge_class: EdgeClass,
     pub modal_mode: ModalMode,
     /// Edge weight updated by attribution trace on TR dissolution.
     pub weight:    f32,
@@ -33,15 +32,11 @@ impl ArgEdge {
         id: EdgeId,
         src: NodeId,
         dst: NodeId,
-        edge_type: EdgeType,
+        edge_class: EdgeClass,
         modal_mode: ModalMode,
     ) -> Self {
         Self {
-            id,
-            src,
-            dst,
-            edge_type,
-            modal_mode,
+            id, src, dst, edge_class, modal_mode,
             weight: 0.5,
             atms_justification: vec![src, dst],
             canonical_id: None,
@@ -75,7 +70,7 @@ mod tests {
 
     #[test]
     fn edge_active_above_threshold() {
-        let mut e = ArgEdge::new(1, 10, 20, EdgeType::Composition, ModalMode::Diamond);
+        let mut e = ArgEdge::new(1, 10, 20, EdgeClass::DEFAULT, ModalMode::Diamond);
         e.weight = 0.7;
         assert!(e.is_active(0.5));
         assert!(!e.is_active(0.8));
@@ -83,7 +78,7 @@ mod tests {
 
     #[test]
     fn delta_clamped() {
-        let mut e = ArgEdge::new(1, 10, 20, EdgeType::Composition, ModalMode::Diamond);
+        let mut e = ArgEdge::new(1, 10, 20, EdgeClass::DEFAULT, ModalMode::Diamond);
         e.weight = 0.9;
         e.apply_delta(0.5);
         assert_eq!(e.weight, 1.0);
