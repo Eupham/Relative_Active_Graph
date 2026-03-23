@@ -76,7 +76,7 @@ with tab_infer:
         with st.spinner("Tokenising…"):
             try:
                 s = tokenize(test_sentence, language_infer)
-                g = sentence_to_mtlg(s)
+                g = sentence_to_mtlg(s.tokens, language_infer)
             except Exception as exc:
                 st.error(f"Tokenisation failed: {exc}")
                 st.stop()

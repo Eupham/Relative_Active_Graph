@@ -105,8 +105,11 @@ class RustBridge:
             return {}
 
     def register_lexicon(self, predicate: str, language: str, surface: str) -> None:
-        self.send(json.dumps({"type": "register_lexicon", "predicate": predicate,
-                              "language": language, "surface": surface}))
+        self.ensure_running()
+        payload = json.dumps({"type": "register_lexicon", "predicate": predicate,
+                              "language": language, "surface": surface})
+        self._proc.stdin.write((payload + "\n").encode())
+        self._proc.stdin.flush()
 
     def execute_passage(self, trd: int, language: str, sentences: list[dict]) -> dict:
         payload = json.dumps({"type": "execute_passage", "trd": trd,

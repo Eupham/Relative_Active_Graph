@@ -91,7 +91,7 @@ impl VocabDistribution {
 fn stable_node_id(predicate: &str) -> NodeId {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME:  u64 = 0x0000_0100_0000_01b3;
-    predicate.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64)
+    predicate.bytes().fold(OFFSET, |h, b| (h ^ b as u64).wrapping_mul(PRIME))
 }
 
 #[cfg(test)]

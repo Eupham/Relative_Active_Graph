@@ -6,14 +6,14 @@ use std::collections::BTreeSet;
 pub fn fnv_hash(s: &str) -> u32 {
     const OFFSET: u32 = 0x811c_9dc5;
     const PRIME:  u32 = 0x0100_0193;
-    s.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u32)
+    s.bytes().fold(OFFSET, |h, b| (h ^ b as u32).wrapping_mul(PRIME))
 }
 
 pub fn stable_node_id(lemma: &str) -> u64 {
     // FNV-1a 64-bit hash. Replaced SHA-256 (§7): faster, no crypto dep needed.
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME:  u64 = 0x0000_0100_0000_01b3;
-    lemma.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64)
+    lemma.bytes().fold(OFFSET, |h, b| (h ^ b as u64).wrapping_mul(PRIME))
 }
 
 #[derive(Clone, Debug)]

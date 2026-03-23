@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 _SPLIT_RE = re.compile(r"\w+(?:'\w+)*|[^\w\s]", re.UNICODE)
 
 def _stable_node_id(lemma: str) -> int:
-    return int(hashlib.sha256(lemma.encode()).hexdigest(), 16) & 0xFFFFFFFFFFFF
+    h = 0xcbf2_9ce4_8422_2325
+    for b in lemma.encode():
+        h = ((h ^ b) * 0x0000_0100_0000_01b3) & 0xFFFFFFFFFFFFFFFF
+    return h
 
 def _fnv_hash(s: str) -> int:
     h = 0x811c9dc5
