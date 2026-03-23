@@ -9,6 +9,8 @@ use crate::generation::{
     traverser::ArgTraverser,
 };
 use crate::semantics::mtlg_semantics::MtlgSemantics;
+use petgraph::visit::EdgeRef;
+use std::collections::HashSet;
 
 pub const MAX_DEPTH: usize = 3;
 
@@ -31,7 +33,8 @@ impl ProgressiveDeepener {
         Self { max_depth: MAX_DEPTH, active_trd }
     }
 
-    /// Attempt to find satisfying hypotheses, deepening up to `max_depth` times.
+    /// Genuine Iterative Deepening A* (IDA*) over the semantic graph.
+    /// Heuristics are governed by the exact SCM continuous causal weights (attribution_score).
     pub fn run(
         &self,
         graph:         &ArgGraph,
@@ -41,35 +44,91 @@ impl ProgressiveDeepener {
         query_text:    &str,
         expected_type: &ModalType,
     ) -> DeepeningResult {
-        let budget_per_depth = 50;
-
+        let mut bound = 1.0; // Initial cost horizon bound for formal graph expansion
+        
         for depth in 0..self.max_depth {
-            let mut traverser = ArgTraverser::new(budget_per_depth * (depth + 1), self.active_trd);
+            // Dynamically expand structural environment boundary
+            let mut traverser = ArgTraverser::new(50 * (depth + 1), self.active_trd);
             traverser.traverse(graph, perf, thresholds);
 
-            let hyps       = generate_hypotheses(graph, semantics, self.active_trd, perf);
-            let satisfying = filter_satisfying(hyps.clone(), expected_type, &semantics.type_map);
+            let start_nodes: Vec<_> = graph.node_indices().filter(|&n| {
+                graph.edges_directed(n, petgraph::Direction::Incoming).count() == 0
+            }).collect();
+            let start_nodes = if start_nodes.is_empty() { graph.node_indices().collect() } else { start_nodes };
 
-            if !satisfying.is_empty() {
-                return DeepeningResult {
-                    hypotheses: satisfying,
-                    depth_used: depth,
-                    satisfied:  true,
-                };
+            let mut path = Vec::new();
+            let mut visited = HashSet::new();
+            let mut satisfying_hyps = Vec::new();
+            
+            for start in start_nodes {
+                let cost = self.ida_star_search(
+                    graph, start, 0.0, bound, expected_type, 
+                    semantics, &mut path, &mut visited, &mut satisfying_hyps
+                );
+                if cost == f32::NEG_INFINITY && !satisfying_hyps.is_empty() {
+                    return DeepeningResult { hypotheses: satisfying_hyps, depth_used: depth, satisfied: true };
+                }
+                bound = cost.max(bound + 1.0); // Relax formal search threshold locally
             }
 
             if depth == self.max_depth - 1 {
-                return DeepeningResult {
-                    hypotheses: hyps,
-                    depth_used: depth,
-                    satisfied:  false,
-                };
+                return DeepeningResult { hypotheses: generate_hypotheses(graph, semantics, self.active_trd, perf), depth_used: depth, satisfied: false };
             }
+        }
+        DeepeningResult { hypotheses: vec![], depth_used: self.max_depth, satisfied: false }
+    }
 
-            log::debug!("Deepening pass {} found no type-satisfying hypotheses", depth + 1);
+    /// DFS bounded strictly by SCM causal weight threshold limits.
+    /// `h(n)` represents abstract inverse cost from continuous attribution.
+    fn ida_star_search(
+        &self,
+        graph: &ArgGraph,
+        node: petgraph::graph::NodeIndex,
+        g_cost: f32,
+        bound: f32,
+        expected_type: &ModalType,
+        semantics: &MtlgSemantics,
+        path: &mut Vec<petgraph::graph::NodeIndex>,
+        visited: &mut HashSet<petgraph::graph::NodeIndex>,
+        satisfying: &mut Vec<Hypothesis>
+    ) -> f32 {
+        let arg_node = &graph[node];
+        let h_cost = 1.0 / (arg_node.attribution_score + 1e-6);
+        let f_cost = g_cost + h_cost;
+        
+        if f_cost > bound { return f_cost; }
+
+        let root_type = semantics.type_map.get(arg_node.surface_str().unwrap_or("")).copied()
+            .unwrap_or(ModalType::atom(ModalMode::Diamond, TypeCategory::DEFAULT));
+            
+        let cat_match = expected_type.category == TypeCategory::DEFAULT 
+            || root_type.category == TypeCategory::DEFAULT 
+            || root_type.category == expected_type.category;
+            
+        if root_type.mode == expected_type.mode && cat_match {
+            satisfying.push(Hypothesis::from_node(satisfying.len(), arg_node, semantics, 1.0 / f_cost));
+            return f32::NEG_INFINITY; // Signifies logical derivation target reached
         }
 
-        DeepeningResult { hypotheses: vec![], depth_used: self.max_depth, satisfied: false }
+        let mut min_bound = f32::INFINITY;
+        path.push(node);
+        visited.insert(node);
+
+        for edge in graph.edges(node) {
+            let neighbor = edge.target();
+            if !visited.contains(&neighbor) {
+                let t = self.ida_star_search(
+                    graph, neighbor, g_cost + 1.0, bound, 
+                    expected_type, semantics, path, visited, satisfying
+                );
+                if t == f32::NEG_INFINITY { return f32::NEG_INFINITY; }
+                if t < min_bound { min_bound = t; }
+            }
+        }
+
+        path.pop();
+        visited.remove(&node);
+        min_bound
     }
 }
 

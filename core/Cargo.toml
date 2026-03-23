@@ -20,3 +20,4 @@ tokio      = { workspace = true }
 rand_distr = "0.4"
 graphica = { git = "https://github.com/symbolica-dev/graphica" }
 numerica = { git = "https://github.com/symbolica-dev/numerica" }
+z3 = "0.12.1"

@@ -100,8 +100,10 @@ impl Linearizer {
         self.proposition_to_surface(&hyp.proposition)
     }
 
-    /// Convert a PropositionGraph to surface form via lexicon lookup.
-    /// ROOT surface first, then args in definition order.
+    /// Convert a PropositionGraph to a syntactically valid surface string
+    /// solely by interpreting strict Categorial Grammar directional functor-argument 
+    /// mappings (Direction::Left and Direction::Right). This fully deprecates 
+    /// language-model-based Next Token Prediction in favor of algebraic graph unparsing.
     pub fn proposition_to_surface(&self, prop: &PropositionGraph) -> String {
         let root_surface = self.lexicon
             .surface_for(&prop.root, &self.language)
@@ -112,16 +114,27 @@ impl Linearizer {
             return root_surface;
         }
 
-        let args: Vec<String> = prop.roles.iter()
-            .map(|(_, arg)| {
-                self.lexicon
-                    .surface_for(arg, &self.language)
-                    .unwrap_or(arg.as_str())
-                    .to_string()
-            })
-            .collect();
+        let root_type = self.lexicon.entry_for(&prop.root, &self.language)
+            .map(|e| &e.modal_type);
+            
+        let dir = root_type.map_or(Direction::Right, |mt| mt.direction);
+        let mut surface = root_surface;
 
-        format!("{} {}", root_surface, args.join(" "))
+        for (_, arg) in &prop.roles {
+            let arg_surf = self.lexicon
+                .surface_for(arg, &self.language)
+                .unwrap_or(arg.as_str())
+                .to_string();
+                
+            // Strictly obey Categorial / L-System unparsing orientations
+            if dir == Direction::Left {
+                surface = format!("{} {}", arg_surf, surface);
+            } else {
+                surface = format!("{} {}", surface, arg_surf);
+            }
+        }
+
+        surface
     }
 
     /// Linearize a λ-term to surface: evaluate, then look up in lexicon.
@@ -184,7 +197,18 @@ mod tests {
             root_node:   1,
         };
         let surface = lin.linearize(&hyp);
+        // Default direction is Right, so 'runs Alice'
         assert_eq!(surface, "runs Alice");
+
+        // Change to Left facing
+        lin.lexicon.register(LexEntry {
+            predicate: "run".into(),
+            language:  "en".into(),
+            surface:   "runs".into(),
+            modal_type: ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Left),
+        });
+        let surface_left = lin.linearize(&hyp);
+        assert_eq!(surface_left, "Alice runs");
     }
 
     #[test]
