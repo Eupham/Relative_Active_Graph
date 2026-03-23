@@ -152,6 +152,8 @@ impl ContextBridge {
         for bit in pending {
             if !still_live.contains(&bit) {
                 self.free_bits.push_back(bit);
+            } else {
+                self.pending_free.push(bit);
             }
         }
     }
