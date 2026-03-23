@@ -112,6 +112,12 @@ impl GraphicaCache {
         Some(edge)
     }
 
+    pub fn update_quality(&mut self, key: &CacheKey, q: f32) {
+        if let Some(r) = self.store.get_mut(key) {
+            r.quality = 0.9 * r.quality + 0.1 * q;
+        }
+    }
+
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 { 0.0 } else { self.hits as f64 / total as f64 }

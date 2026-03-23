@@ -1,7 +1,6 @@
 //! TypeNormalizer: applies KBC-completed Ruler rules as type rewrites to an ARG.
 
-use std::collections::HashMap;
-use crate::types::{ModalType, ModalMode, TypeCategory};
+use crate::types::{ModalMode, TypeCategory};
 use crate::arg::ArgGraph;
 use crate::rules::ruler_bridge::MtlgRule;
 

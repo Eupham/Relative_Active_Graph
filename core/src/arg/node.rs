@@ -51,10 +51,39 @@ impl ArgNode {
     }
 
     pub fn is_active(&self, active_env: Env, theta: f64) -> bool {
-        (self.atms_label & active_env) != 0 && self.attribution_score as f64 >= theta
+        crate::atms::base::env::subsumes(self.atms_label, active_env)
+            && self.attribution_score as f64 > theta
     }
 
     pub fn surface_str(&self) -> Option<&str> {
         self.surface.as_deref().and_then(|b| std::str::from_utf8(b).ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ModalType;
+
+    #[test]
+    fn zero_label_always_active() {
+        let mut n = ArgNode::new(1, NodeClass::DEFAULT, ModalType::default(), (0, 0));
+        n.atms_label = 0;
+        n.attribution_score = 0.9;
+        // Empty environment is a subset of any environment — always active.
+        assert!(n.is_active(0b111, 0.5));
+        assert!(n.is_active(0b000, 0.5));
+    }
+
+    #[test]
+    fn nonzero_label_requires_superset_env() {
+        let mut n = ArgNode::new(2, NodeClass::DEFAULT, ModalType::default(), (0, 0));
+        n.atms_label = 0b011;
+        n.attribution_score = 0.9;
+        // active_env must be a superset of atms_label
+        assert!(n.is_active(0b111, 0.5));
+        assert!(n.is_active(0b011, 0.5));
+        // 0b001 does not contain 0b010, so not a superset
+        assert!(!n.is_active(0b001, 0.5));
     }
 }

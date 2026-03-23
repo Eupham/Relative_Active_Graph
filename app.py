@@ -126,7 +126,9 @@ with tab_infer:
                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     stdout, stderr = proc.communicate(payload, timeout=30)
                 except subprocess.TimeoutExpired:
-                    st.error("Engine timed out.")
+                    proc.kill()
+                    proc.wait()
+                    st.error("Engine timed out. Please try again.")
                     st.stop()
                 except Exception as exc:
                     st.error(f"Engine failed: {exc}")
