@@ -23,8 +23,12 @@ tab_train, tab_infer = st.tabs(["Train", "Inference & Visualization"])
 # ─── TRAIN ────────────────────────────────────────────────────────────────────
 
 with tab_train:
-    st.header("Train on C4 (Teacher Forcing)")
-    st.caption("No bootstrap phase. The engine learns continuously from the data stream.")
+    st.header("Train on C4")
+    st.caption(
+        "Sequential edge-weight training on C4. "
+        "The expected token for each step constrains the quality signal sent to the engine. "
+        "No bootstrap phase — training starts directly from the stream."
+    )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1: language        = st.text_input("Language", value="en")
@@ -45,7 +49,7 @@ with tab_train:
                 max_sentences=int(max_sentences), binary=binary,
                 category_warmup=int(category_warmup),
             )
-            with st.spinner("Teacher-forcing in progress…"):
+            with st.spinner("Training in progress…"):
                 stats_list = SequentialTrainer(config).train()
 
             if stats_list:

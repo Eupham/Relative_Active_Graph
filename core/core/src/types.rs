@@ -110,9 +110,15 @@ impl Quality {
     pub fn as_f64(self) -> f64  { self.0 as f64 }
 
     /// CE quality signal for a prediction.
-    /// Correct: log-scaled CE signal -ln(p)/LN_SCALE, normalised to [0, 1].
-    /// Wrong: linear CE-gradient signal -p_wrong.
-    /// Both signals match the cross-entropy gradient direction for their respective roles.
+    ///
+    /// Correct: returns -ln(p) / LN_SCALE, normalised to [0, 1].
+    ///   LN_SCALE = 7.0 ≈ -ln(1/1000), calibrated for a vocabulary of ~1000 nodes.
+    ///   Low probability → large positive signal (strong pull toward correct answer).
+    ///
+    /// Wrong: returns -p_wrong (negated linear penalty).
+    ///   Maximum penalty when the model is most confident in the wrong answer.
+    ///
+    /// Both directions match the cross-entropy gradient sign for their respective roles.
     ///
     /// The caller applies this to:
     ///   - expected edge: always positive (pull toward correct)
