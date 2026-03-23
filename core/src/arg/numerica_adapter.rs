@@ -4,22 +4,19 @@
 
 use rand_distr::{Poisson, Distribution};
 
-/// Normalize a path-weight sequence via numerically-stable Log-Sum-Exp.
+/// Normalize a path-weight sequence via geometric mean.
 ///
 /// # Edge cases
 /// - Empty slice → `0.0` (no evidence, neutral).
-/// - All-`-inf` slice → `f32::NEG_INFINITY` (handled naturally by LSE).
-///
-/// # Algorithm
-/// LSE(x) = max(x) + ln( Σ exp(xᵢ − max(x)) )
-/// Subtracting the maximum before exponentiation prevents overflow.
 pub fn normalize_path_weight(weights: &[f32]) -> f32 {
     if weights.is_empty() {
         return 0.0;
     }
-    let max = weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let sum_exp: f32 = weights.iter().map(|&w| (w - max).exp()).sum();
-    max + sum_exp.ln()
+    let mut product = 1.0;
+    for &w in weights {
+        product *= w;
+    }
+    product.powf(1.0 / weights.len() as f32)
 }
 
 /// Sample the number of discrete perturbation events from a Poisson(λ) distribution.

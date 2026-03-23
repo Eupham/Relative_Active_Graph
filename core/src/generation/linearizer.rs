@@ -76,7 +76,7 @@ impl PerLanguageLexicon {
             .or_else(|| self.entries.get(&self.default_lang))?;
         lex.values().find(|entry| {
             let id = entry.predicate.bytes()
-                .fold(FNV_OFFSET, |h, b| h.wrapping_mul(FNV_PRIME) ^ b as u64);
+                .fold(FNV_OFFSET, |h, b| (h ^ b as u64).wrapping_mul(FNV_PRIME));
             id == node_id
         }).map(|e| e.surface.as_str())
     }

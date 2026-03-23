@@ -88,9 +88,8 @@ impl ContextBridge {
         self.bit_to_context.remove(&bit);
         self.active_env = remove_bit(self.active_env, bit);
         // A bit is reclaimable only when no live ATMS label references it.
-        // Using unchecked variant here — safe because pop means the context is done.
+        // We push it to pending_free; it will be reclaimed safely later.
         self.pending_free.push(bit);
-        self.try_reclaim_pending_unchecked();
         Some((ctx, bit, self.active_env))
     }
 
@@ -201,6 +200,8 @@ mod tests {
                 "at depth {depth}"
             );
             bridge.pop().expect("pop should work");
+            // Emulate shift/reclaim so we don't exhaust bits
+            bridge.try_reclaim_pending(&[]);
         }
     }
 }

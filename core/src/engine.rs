@@ -414,6 +414,9 @@ impl Engine {
         if let Some((dissolved_trs, _)) = self.context_stack.pop() {
             let success = quality.as_f32() >= Quality::PARTIAL.as_f32();
             for tr in &dissolved_trs { self.ruler.observe_dissolved_tr(tr, success); }
+
+            let live_envs: Vec<Env> = self.global_nodes.values().map(|n| n.atms_label).collect();
+            self.context_stack.bridge.try_reclaim_pending(&live_envs);
         }
 
         self.post_execution_common(&search.graph, trd, quality);
@@ -563,6 +566,9 @@ impl Engine {
         if let Some((dissolved_trs, _)) = self.context_stack.pop() {
             let success = final_quality.as_f32() >= Quality::PARTIAL.as_f32();
             for tr in &dissolved_trs { self.ruler.observe_dissolved_tr(tr, success); }
+
+            let live_envs: Vec<Env> = self.global_nodes.values().map(|n| n.atms_label).collect();
+            self.context_stack.bridge.try_reclaim_pending(&live_envs);
         }
 
         self.post_execution_common(&final_graph, Some(trd), final_quality);

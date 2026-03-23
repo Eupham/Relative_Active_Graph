@@ -262,7 +262,7 @@ fn stable_node_id_from_structure(s: &TokenStructure) -> NodeId {
     let bytes = combined.to_le_bytes();
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME:  u64 = 0x0000_0100_0000_01b3;
-    bytes.iter().fold(OFFSET, |h, &b| h.wrapping_mul(PRIME) ^ b as u64)
+    bytes.iter().fold(OFFSET, |h, &b| (h ^ b as u64).wrapping_mul(PRIME))
 }
 
 // ── Graph types ───────────────────────────────────────────────────────────────
@@ -297,17 +297,19 @@ pub struct MtlgGraph {
 
 // ── Conversion ────────────────────────────────────────────────────────────────
 
-pub fn sentence_to_mtlg(sentence: &TokenSentence, inducer: Option<&mut CategoryInducer>) -> MtlgGraph {
+pub fn sentence_to_mtlg(sentence: &TokenSentence, mut inducer: Option<&mut CategoryInducer>) -> MtlgGraph {
     let mut deferred = Vec::new();
     let mut nodes = Vec::new();
     for tok in &sentence.tokens {
         let structure = extract_features(tok, sentence);
-        let ucca_cat  = inducer.as_ref().map(|ind| {
+        let ucca_cat = if let Some(ref mut ind) = inducer {
             let node_id = stable_node_id_from_structure(&structure);
             let leaf = structure.is_punctuation || structure.char_length_norm < 0.1;
-            // Safe to call predict without mut borrow here since we have &mut via as_ref workaround.
-            TypeCategory::DEFAULT
-        });
+            ind.add_node(node_id, leaf);
+            Some(ind.predict_by_id(node_id))
+        } else {
+            None
+        };
         if ucca_cat.is_none() { deferred.push(structure.clone()); }
         nodes.push(MtlgNode {
             token_id: tok.id, text: tok.text.clone(), lemma: tok.lemma.clone(),

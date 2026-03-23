@@ -11,7 +11,7 @@ from text_to_graph import sentence_to_mtlg
 def build_cli_query(sentence: str, situation_id: int) -> dict:
     language = "en"
     s    = tokenize(sentence, language)
-    g    = sentence_to_mtlg(s)
+    g    = sentence_to_mtlg(s.tokens, language)
     nodes = [{"id": n.token_id, "surface": n.text, "score": 0.9,
                "mode": n.modal_mode, "cat": n.category_id, "arity": n.arity}
              for n in g.nodes]
