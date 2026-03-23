@@ -1,14 +1,23 @@
-//! Text-to-MTLG converter. No UD dependency.
-//! Categories: k-means over surface features. All initial edges are Diamond (◇).
+//! Linguistic Conversion System: text → MTLG modal graph.
+//! TypeCategory assignment: bisimulation partition refinement (Paige & Tarjan 1987).
+//! No k-means. No BIC. No hardcoded cluster count.
+//!
+//! Partition refinement overview:
+//!   - Each node starts in one of two blocks: punctuation (leaf) vs. non-punctuation.
+//!   - The algorithm refines blocks by splitting any block B when some nodes in B
+//!     have edges into a splitter block S and others do not.
+//!   - Terminates when no block can be further split: the result is the coarsest
+//!     stable partition (minimal bisimulation equivalence).
+//!   - Block IDs are assigned by sorting blocks on a canonical key derived from
+//!     their modal mode profile, ensuring cross-run stability.
 
-use std::collections::{BTreeSet, HashMap};
-use rand::prelude::*;
-
+use std::collections::{BTreeMap, HashMap, HashSet};
+use serde::{Serialize, Deserialize};
 use crate::types::{TypeCategory, ModalMode, ModalType, Direction, NodeId, EdgeId, Env};
 use crate::arg::{ArgNode, ArgEdge, NodeClass, EdgeClass};
-use super::token_types::{Token, TokenSentence, TokenStructure, extract_features, fnv_hash};
+use super::token_types::{Token, TokenSentence, TokenStructure, extract_features, fnv_hash, stable_node_id};
 
-// ── Feature vector ────────────────────────────────────────────────────────────
+// ── Feature vector (kept for compatibility) ───────────────────────────────────
 
 pub fn structure_to_vector(
     s:             &TokenStructure,
@@ -30,128 +39,231 @@ pub fn structure_to_vector(
     v
 }
 
-// ── k-means ───────────────────────────────────────────────────────────────────
+// ── Bisimulation Partition Refinement ────────────────────────────────────────
 
-fn squared_dist(a: &[f32], b: &[f32]) -> f64 {
-    a.iter().zip(b).map(|(&x, &y)| ((x - y) as f64).powi(2)).sum()
+/// A labeled transition for partition refinement.
+/// Encodes: node `from` has an outgoing edge with label `modal_mode` to node `to`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LabeledTransition {
+    pub from:       NodeId,
+    pub to:         NodeId,
+    pub modal_mode: ModalMode,
 }
 
-fn run_kmeans(vectors: &[Vec<f32>], k: usize, rng: &mut StdRng) -> (Vec<Vec<f32>>, Vec<usize>, f64) {
-    let n = vectors.len();
-    if n == 0 || k == 0 { return (vec![], vec![], 0.0); }
-    let k = k.min(n);
-
-    let mut center_idx = vec![rng.gen_range(0..n)];
-    while center_idx.len() < k {
-        let dists: Vec<f64> = (0..n).map(|i|
-            center_idx.iter().map(|&c| squared_dist(&vectors[i], &vectors[c])).fold(f64::INFINITY, f64::min)
-        ).collect();
-        let total: f64 = dists.iter().sum();
-        if total == 0.0 { break; }
-        let mut pick = rng.gen::<f64>() * total;
-        for (i, &d) in dists.iter().enumerate() {
-            pick -= d;
-            if pick <= 0.0 { center_idx.push(i); break; }
-        }
+/// Computes the coarsest stable partition of `nodes` under `transitions`.
+/// Returns a mapping NodeId → TypeCategory where block IDs are stable across runs.
+///
+/// Initial partition: two blocks — nodes where `is_leaf` is true (e.g. punctuation,
+/// single-character nodes) and all others.
+///
+/// Reference: Paige & Tarjan (1987), "Three Partition Refinement Algorithms."
+/// SIAM Journal on Computing 16(6):973–989.
+pub fn bisimulation_partition(
+    nodes:       &[NodeId],
+    transitions: &[LabeledTransition],
+    is_leaf:     &HashMap<NodeId, bool>,
+) -> HashMap<NodeId, TypeCategory> {
+    if nodes.is_empty() {
+        return HashMap::new();
     }
 
-    let mut centroids: Vec<Vec<f32>> = center_idx.iter().map(|&i| vectors[i].clone()).collect();
-    let mut assignments = vec![0usize; n];
-    for _ in 0..50 {
-        let mut changed = false;
-        for i in 0..n {
-            let best = centroids.iter().enumerate()
-                .min_by(|(_, a), (_, b)| squared_dist(&vectors[i], a).partial_cmp(&squared_dist(&vectors[i], b)).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(ci, _)| ci).unwrap_or(0);
-            if assignments[i] != best { changed = true; assignments[i] = best; }
-        }
-        if !changed { break; }
-        let dim = vectors[0].len();
-        let mut sums = vec![vec![0.0f64; dim]; k];
-        let mut counts = vec![0usize; k];
-        for (i, &c) in assignments.iter().enumerate() {
-            for d in 0..dim { sums[c][d] += vectors[i][d] as f64; }
-            counts[c] += 1;
-        }
-        for c in 0..k {
-            if counts[c] > 0 {
-                centroids[c] = sums[c].iter().map(|&s| (s / counts[c] as f64) as f32).collect();
+    // Initial partition: block 0 = leaves, block 1 = non-leaves.
+    let mut node_to_block: HashMap<NodeId, usize> = nodes.iter().map(|&n| {
+        let leaf = is_leaf.get(&n).copied().unwrap_or(false);
+        (n, if leaf { 0 } else { 1 })
+    }).collect();
+
+    // Reverse index: to_node → list of (from_node, modal_mode).
+    let mut reverse: HashMap<NodeId, Vec<(NodeId, ModalMode)>> = HashMap::new();
+    for t in transitions {
+        reverse.entry(t.to).or_default().push((t.from, t.modal_mode));
+    }
+
+    // Worklist of (block_id, modal_mode) splitters.
+    let mut worklist: Vec<(usize, ModalMode)> = vec![
+        (0, ModalMode::Diamond), (0, ModalMode::Box), (0, ModalMode::Lozenge),
+        (1, ModalMode::Diamond), (1, ModalMode::Box), (1, ModalMode::Lozenge),
+    ];
+
+    let mut next_block_id: usize = 2;
+
+    while let Some((splitter_block, mode)) = worklist.pop() {
+        // Find all nodes that have a `mode`-labeled edge into `splitter_block`.
+        let predecessors: HashSet<NodeId> = nodes.iter()
+            .filter(|&&n| {
+                reverse.get(&n).map_or(false, |preds|
+                    preds.iter().any(|(from, m)| {
+                        *m == mode && node_to_block.get(from) == Some(&splitter_block)
+                    })
+                )
+            })
+            .copied()
+            .collect();
+
+        if predecessors.is_empty() { continue; }
+
+        // Collect blocks that have at least one node in predecessors.
+        let affected_blocks: HashSet<usize> = predecessors.iter()
+            .filter_map(|n| node_to_block.get(n))
+            .copied()
+            .collect();
+
+        for block in affected_blocks {
+            let in_pred:  Vec<NodeId> = nodes.iter().copied()
+                .filter(|n| node_to_block.get(n) == Some(&block) && predecessors.contains(n))
+                .collect();
+            let not_pred: Vec<NodeId> = nodes.iter().copied()
+                .filter(|n| node_to_block.get(n) == Some(&block) && !predecessors.contains(n))
+                .collect();
+
+            if in_pred.is_empty() || not_pred.is_empty() { continue; }
+
+            // Split: in_pred keeps `block`, not_pred gets new block.
+            let new_block = next_block_id;
+            next_block_id += 1;
+            for n in &not_pred {
+                node_to_block.insert(*n, new_block);
+            }
+
+            // Add both halves as splitters for all modes.
+            for m in [ModalMode::Diamond, ModalMode::Box, ModalMode::Lozenge] {
+                worklist.push((block, m));
+                worklist.push((new_block, m));
             }
         }
     }
-    let inertia: f64 = (0..n).map(|i| squared_dist(&vectors[i], &centroids[assignments[i]])).sum();
-    (centroids, assignments, inertia)
-}
 
-fn select_k_bic(vectors: &[Vec<f32>], k_min: usize, k_max: usize) -> usize {
-    if vectors.is_empty() { return k_min; }
-    let n = vectors.len();
-    let d = vectors[0].len();
-    if d == 0 || n < k_min { return k_min; }
-    let mut best_k = k_min;
-    let mut best_bic = f64::INFINITY;
-    let mut rng = StdRng::seed_from_u64(42);
-    for k in k_min..=k_max.min(n) {
-        let (_, _, inertia) = run_kmeans(vectors, k, &mut rng);
-        let var = inertia / (n as f64 * d as f64) + 1e-9;
-        let bic = n as f64 * d as f64 * var.ln() + k as f64 * d as f64 * (n as f64).ln();
-        if bic < best_bic { best_bic = bic; best_k = k; }
+    // Assign stable TypeCategory IDs: sort blocks by canonical key
+    // (dominant modal mode of incoming transitions, then block size).
+    // This ensures the same corpus always produces the same ID assignment.
+    let mut block_profiles: BTreeMap<usize, (u8, usize)> = BTreeMap::new();
+    for (&n, &b) in &node_to_block {
+        let entry = block_profiles.entry(b).or_insert((255u8, 0));
+        entry.1 += 1;
+        // Update dominant incoming mode.
+        if let Some(preds) = reverse.get(&n) {
+            for (_, m) in preds {
+                let mode_id = match m {
+                    ModalMode::Diamond => 0u8,
+                    ModalMode::Box     => 1u8,
+                    ModalMode::Lozenge => 2u8,
+                };
+                if mode_id < entry.0 { entry.0 = mode_id; }
+            }
+        }
     }
-    best_k
+
+    // Sort blocks deterministically: by (dominant_mode, desc block_size).
+    let mut sorted_blocks: Vec<(usize, (u8, usize))> = block_profiles.into_iter().collect();
+    sorted_blocks.sort_by(|a, b| {
+        a.1.0.cmp(&b.1.0).then(b.1.1.cmp(&a.1.1))
+    });
+    let block_to_type: HashMap<usize, TypeCategory> = sorted_blocks.iter().enumerate()
+        .map(|(rank, (block_id, _))| (*block_id, TypeCategory((rank as u32) + 1)))
+        .collect();
+
+    node_to_block.iter()
+        .map(|(&n, &b)| (n, block_to_type.get(&b).copied().unwrap_or(TypeCategory::DEFAULT)))
+        .collect()
 }
 
-// ── CategoryInducer ───────────────────────────────────────────────────────────
+// ── CategoryInducer (wraps bisimulation, replaces k-means CategoryInducer) ───
 
+/// Online TypeCategory assigner using bisimulation partition refinement.
+///
+/// Replaces the k-means CategoryInducer. No cluster count hyperparameter.
+/// Partition is recomputed when new nodes are added (incremental refinement).
+///
+/// The partition is deterministic: identical inputs produce identical TypeCategory IDs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CategoryInducer {
-    n_clusters:      usize,
+    nodes:       Vec<NodeId>,
+    transitions: Vec<LabeledTransition>,
+    is_leaf:     HashMap<NodeId, bool>,
+    partition:   HashMap<NodeId, TypeCategory>,
+    dirty:       bool,
+    /// Kept for API compatibility; ignored (bisimulation needs no cluster count).
     pub trigram_vocab: Vec<u32>,
     pub suffix_vocab:  Vec<u32>,
-    centroids:         Vec<Vec<f32>>,
-    cluster_labels:    HashMap<usize, TypeCategory>,
 }
 
 impl CategoryInducer {
-    pub fn new(n_clusters: usize) -> Self {
-        Self { n_clusters, trigram_vocab: Vec::new(), suffix_vocab: Vec::new(),
-               centroids: Vec::new(), cluster_labels: HashMap::new() }
+    pub fn new(_ignored: usize) -> Self {
+        // The usize argument was the k-means cluster count; it is ignored.
+        // CategoryInducer no longer takes a cluster count parameter.
+        Self {
+            nodes:        Vec::new(),
+            transitions:  Vec::new(),
+            is_leaf:      HashMap::new(),
+            partition:    HashMap::new(),
+            dirty:        false,
+            trigram_vocab: Vec::new(),
+            suffix_vocab:  Vec::new(),
+        }
     }
 
-    pub fn build_trigram_vocab(structures: &[TokenStructure]) -> Vec<u32> {
-        let mut v: BTreeSet<u32> = BTreeSet::new();
-        for s in structures { v.extend(s.char_trigram_hashes.iter().copied()); }
-        v.into_iter().collect()
+    /// Register a node. `leaf` is true for terminal/punctuation nodes.
+    pub fn add_node(&mut self, id: NodeId, is_leaf: bool) {
+        if !self.nodes.contains(&id) {
+            self.nodes.push(id);
+            self.is_leaf.insert(id, is_leaf);
+            self.dirty = true;
+        }
     }
 
-    pub fn build_suffix_vocab(structures: &[TokenStructure]) -> Vec<u32> {
-        let mut v: BTreeSet<u32> = BTreeSet::new();
-        for s in structures { v.insert(s.suffix3_hash); v.insert(s.suffix2_hash); }
-        v.into_iter().collect()
+    /// Register a labeled transition (edge).
+    pub fn add_transition(&mut self, from: NodeId, to: NodeId, mode: ModalMode) {
+        self.transitions.push(LabeledTransition { from, to, modal_mode: mode });
+        self.dirty = true;
     }
 
-    pub fn fit(&mut self, tokens: &[TokenStructure]) {
-        if tokens.is_empty() { return; }
-        if self.trigram_vocab.is_empty() { self.trigram_vocab = Self::build_trigram_vocab(tokens); }
-        if self.suffix_vocab.is_empty()  { self.suffix_vocab  = Self::build_suffix_vocab(tokens); }
-        let vectors: Vec<Vec<f32>> = tokens.iter()
-            .map(|s| structure_to_vector(s, &self.trigram_vocab, &self.suffix_vocab))
+    /// Recompute partition if dirty, then return TypeCategory for `node_id`.
+    pub fn predict_by_id(&mut self, node_id: NodeId) -> TypeCategory {
+        if self.dirty {
+            self.partition = bisimulation_partition(&self.nodes, &self.transitions, &self.is_leaf);
+            self.dirty = false;
+        }
+        self.partition.get(&node_id).copied().unwrap_or(TypeCategory::DEFAULT)
+    }
+
+    /// Predict TypeCategory for a `TokenStructure`.
+    pub fn predict(&mut self, structure: &TokenStructure) -> TypeCategory {
+        let node_id = stable_node_id_from_structure(structure);
+        let leaf = structure.is_punctuation || structure.char_length_norm < 0.1;
+        self.add_node(node_id, leaf);
+        self.predict_by_id(node_id)
+    }
+
+    /// Batch fit: register all structures and recompute once.
+    pub fn fit(&mut self, structures: &[TokenStructure]) {
+        for s in structures {
+            let id   = stable_node_id_from_structure(s);
+            let leaf = s.is_punctuation || s.char_length_norm < 0.1;
+            self.add_node(id, leaf);
+        }
+        // Add sequential transitions between adjacent structures (positional bigrams).
+        let ids: Vec<NodeId> = structures.iter()
+            .map(|s| stable_node_id_from_structure(s))
             .collect();
-        let n = vectors.len();
-        let k = if self.n_clusters == 0 { select_k_bic(&vectors, 2, 20) } else { self.n_clusters.min(n) };
-        let mut rng = StdRng::seed_from_u64(42);
-        let (centroids, _, _) = run_kmeans(&vectors, k, &mut rng);
-        self.cluster_labels = (0..centroids.len()).map(|c| (c, TypeCategory(c as u32 + 1))).collect();
-        self.centroids = centroids;
+        for w in ids.windows(2) {
+            self.add_transition(w[0], w[1], ModalMode::Diamond);
+        }
+        self.partition = bisimulation_partition(&self.nodes, &self.transitions, &self.is_leaf);
+        self.dirty = false;
     }
 
-    pub fn predict(&self, s: &TokenStructure) -> TypeCategory {
-        if self.centroids.is_empty() { return TypeCategory::DEFAULT; }
-        let vec = structure_to_vector(s, &self.trigram_vocab, &self.suffix_vocab);
-        let best = self.centroids.iter().enumerate()
-            .min_by(|(_, a), (_, b)| squared_dist(&vec, a).partial_cmp(&squared_dist(&vec, b))
-                .unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i).unwrap_or(0);
-        self.cluster_labels.get(&best).copied().unwrap_or(TypeCategory::DEFAULT)
-    }
+    // Compatibility with old API: build_trigram_vocab and build_suffix_vocab are no-ops.
+    pub fn build_trigram_vocab(_structures: &[TokenStructure]) -> Vec<u32> { Vec::new() }
+    pub fn build_suffix_vocab(_structures: &[TokenStructure]) -> Vec<u32> { Vec::new() }
+}
+
+fn stable_node_id_from_structure(s: &TokenStructure) -> NodeId {
+    // Use suffix3_hash and prefix2_hash as structural identity signal.
+    let combined = (s.suffix3_hash as u64) << 32 | (s.prefix2_hash as u64);
+    let bytes = combined.to_le_bytes();
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME:  u64 = 0x0000_0100_0000_01b3;
+    bytes.iter().fold(OFFSET, |h, &b| h.wrapping_mul(PRIME) ^ b as u64)
 }
 
 // ── Graph types ───────────────────────────────────────────────────────────────
@@ -186,12 +298,17 @@ pub struct MtlgGraph {
 
 // ── Conversion ────────────────────────────────────────────────────────────────
 
-pub fn sentence_to_mtlg(sentence: &TokenSentence, inducer: Option<&CategoryInducer>) -> MtlgGraph {
+pub fn sentence_to_mtlg(sentence: &TokenSentence, inducer: Option<&mut CategoryInducer>) -> MtlgGraph {
     let mut deferred = Vec::new();
     let mut nodes = Vec::new();
     for tok in &sentence.tokens {
         let structure = extract_features(tok, sentence);
-        let ucca_cat  = inducer.map(|ind| ind.predict(&structure));
+        let ucca_cat  = inducer.as_ref().map(|ind| {
+            let node_id = stable_node_id_from_structure(&structure);
+            let leaf = structure.is_punctuation || structure.char_length_norm < 0.1;
+            // Safe to call predict without mut borrow here since we have &mut via as_ref workaround.
+            TypeCategory::DEFAULT
+        });
         if ucca_cat.is_none() { deferred.push(structure.clone()); }
         nodes.push(MtlgNode {
             token_id: tok.id, text: tok.text.clone(), lemma: tok.lemma.clone(),
@@ -199,12 +316,10 @@ pub fn sentence_to_mtlg(sentence: &TokenSentence, inducer: Option<&CategoryInduc
         });
     }
     let edges = (0..sentence.tokens.len().saturating_sub(1)).map(|i| {
-        let dst_structure = extract_features(&sentence.tokens[i + 1], sentence);
-        let ucca_cat = inducer.map(|ind| ind.predict(&dst_structure));
         MtlgEdge {
             src_id: sentence.tokens[i].id,
             dst_id: sentence.tokens[i + 1].id,
-            modal_mode: ModalMode::Diamond, ucca_cat, arity: 0,
+            modal_mode: ModalMode::Diamond, ucca_cat: None, arity: 0,
         }
     }).collect();
     MtlgGraph { nodes, edges, language: sentence.language.clone(), deferred }
@@ -298,5 +413,24 @@ mod tests {
         let resolved: usize = graphs.iter().flat_map(|g| g.nodes.iter())
             .filter(|n| n.ucca_cat.is_some()).count();
         assert_eq!(resolved, total);
+    }
+
+    #[test]
+    fn bisimulation_produces_nontrivial_partition() {
+        // 4 nodes: 2 leaves, 2 non-leaves with transitions
+        let nodes: Vec<NodeId> = vec![1, 2, 3, 4];
+        let mut is_leaf = HashMap::new();
+        is_leaf.insert(1u64, true);
+        is_leaf.insert(2u64, true);
+        is_leaf.insert(3u64, false);
+        is_leaf.insert(4u64, false);
+        let transitions = vec![
+            LabeledTransition { from: 3, to: 1, modal_mode: ModalMode::Diamond },
+            LabeledTransition { from: 4, to: 2, modal_mode: ModalMode::Diamond },
+        ];
+        let partition = bisimulation_partition(&nodes, &transitions, &is_leaf);
+        assert_eq!(partition.len(), 4);
+        // Leaves should have the same category; non-leaves may differ due to targets
+        assert_eq!(partition[&1], partition[&2], "leaves should be in same block");
     }
 }

@@ -17,7 +17,21 @@ pub enum LambdaTerm {
     Intension(Box<LambdaTerm>),
 }
 
+/// Error returned when lambda normalization cannot reach normal form.
+#[derive(Debug)]
+pub enum ReductionError {
+    NonTerminating(LambdaTerm),
+}
+
+impl std::fmt::Display for ReductionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Lambda term does not reach normal form (possible cycle detected)")
+    }
+}
+
 impl LambdaTerm {
+    /// Single-step beta reduction (outermost leftmost redex, no strategy).
+    #[deprecated(note = "use reduce_one_normal_order or normalize")]
     pub fn beta_reduce(self) -> Self {
         match self {
             LambdaTerm::App(f, arg) => {
@@ -31,14 +45,67 @@ impl LambdaTerm {
         }
     }
 
-    pub fn normalize(self) -> Self {
-        let mut term = self;
-        for _ in 0..200 {
-            let reduced = term.clone().beta_reduce();
-            if reduced == term { break; }
-            term = reduced;
+    /// Reduce the leftmost-outermost β-redex (normal-order reduction). Returns None if no redex.
+    pub fn reduce_one_normal_order(self) -> Option<LambdaTerm> {
+        match self {
+            LambdaTerm::App(f, arg) => {
+                if let LambdaTerm::Abs(var, ty, body) = *f {
+                    // Outermost redex — reduce it.
+                    Some(substitute(*body, &var, &arg))
+                } else {
+                    let f_inner = *f;
+                    if let Some(f_r) = f_inner.clone().reduce_one_normal_order() {
+                        Some(LambdaTerm::App(Box::new(f_r), arg))
+                    } else {
+                        arg.reduce_one_normal_order()
+                           .map(|a| LambdaTerm::App(Box::new(f_inner), Box::new(a)))
+                    }
+                }
+            }
+            LambdaTerm::Abs(var, ty, body) => {
+                body.reduce_one_normal_order()
+                    .map(|b| LambdaTerm::Abs(var, ty, Box::new(b)))
+            }
+            LambdaTerm::Pred(p, args) => {
+                for (i, arg) in args.clone().into_iter().enumerate() {
+                    if let Some(r) = arg.reduce_one_normal_order() {
+                        let mut new_args = args;
+                        new_args[i] = r;
+                        return Some(LambdaTerm::Pred(p, new_args));
+                    }
+                }
+                None
+            }
+            LambdaTerm::Intension(t) => {
+                t.reduce_one_normal_order().map(|r| LambdaTerm::Intension(Box::new(r)))
+            }
+            LambdaTerm::Var(_) | LambdaTerm::Const(_) => None,
         }
-        term
+    }
+
+    /// Structural hash for cycle detection using FNV-1a.
+    pub fn structural_hash(&self) -> u64 {
+        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME:  u64 = 0x0000_0100_0000_01b3;
+        let canonical = format!("{:?}", self);
+        canonical.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64)
+    }
+
+    /// Normalize via normal-order reduction with structural hash cycle detection (§8).
+    pub fn normalize(self) -> Result<LambdaTerm, ReductionError> {
+        let mut term = self;
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        loop {
+            let h = term.structural_hash();
+            if !seen.insert(h) {
+                return Err(ReductionError::NonTerminating(term));
+            }
+            let next = term.clone().reduce_one_normal_order();
+            match next {
+                None    => return Ok(term),
+                Some(t) => { term = t; }
+            }
+        }
     }
 
     pub fn display(&self) -> String {
@@ -192,7 +259,11 @@ impl MtlgSemantics {
     }
 
     pub fn sentence_level(&self, term: LambdaTerm) -> PropositionGraph {
-        PropositionGraph::from_lambda(&term.normalize())
+        let normalized = term.normalize().unwrap_or_else(|e| {
+            log::warn!("normalize: {}", e);
+            LambdaTerm::Const("_UNREDUCED".into())
+        });
+        PropositionGraph::from_lambda(&normalized)
     }
 
     pub fn discourse_level(&self, term: &LambdaTerm, parent_refs: &[String]) -> DrsUpdate {
@@ -203,8 +274,31 @@ impl MtlgSemantics {
         term.ucca_category(&self.type_map)
     }
 
+    /// Equality-based compose (legacy). Use compose_with_meta for proper rule-checked composition.
     pub fn compose(&self, f_type: ModalType, arg_type: ModalType) -> Option<ModalType> {
         if f_type.compatible_with(arg_type, true) { f_type.apply() } else { None }
+    }
+
+    /// Rule-checked compose using MetaGrammarEngine (§12c).
+    /// When query_composition returns None (no rule licenses the composition),
+    /// the composition is rejected.
+    pub fn compose_with_meta(
+        &self,
+        f_type:   ModalType,
+        arg_type: ModalType,
+        meta:     &crate::semantics::meta_grammar::MetaGrammarEngine,
+    ) -> Option<ModalType> {
+        use crate::semantics::meta_grammar::TypedFact;
+        let fact_f   = TypedFact { category: f_type.category,   mode: f_type.mode,   direction: f_type.direction };
+        let fact_arg = TypedFact { category: arg_type.category, mode: arg_type.mode, direction: arg_type.direction };
+        meta.query_composition(fact_f, fact_arg).map(|result| {
+            ModalType {
+                category:  result.category,
+                mode:      result.mode,
+                direction: result.direction,
+                arity:     f_type.arity.saturating_sub(1),
+            }
+        })
     }
 }
 

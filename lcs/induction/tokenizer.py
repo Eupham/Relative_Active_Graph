@@ -1,11 +1,11 @@
 """Simple surface tokeniser. No ML, no external parser, no UD."""
 from __future__ import annotations
-import hashlib, re
+import re
 from dataclasses import dataclass
 
 
 def _stable_node_id(lemma: str) -> int:
-    return int(hashlib.sha256(lemma.encode()).hexdigest(), 16) & 0xFFFFFFFFFFFF
+    return _fnv_hash(lemma)
 
 
 def _fnv_hash(s: str) -> int:

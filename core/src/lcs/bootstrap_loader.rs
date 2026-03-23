@@ -50,15 +50,19 @@ pub struct BootstrapArtefacts {
     pub trd_profiles: HashMap<TRDId, TrdProfile>,
     /// Edge ID → token surface form (loaded from export).
     pub edge_vocab:   HashMap<u64, String>,
+    /// FNV-1a fingerprint of the loaded categories array (§20.1).
+    /// Verified on load to detect stale/corrupted artefacts; 0 when not computed.
+    pub partition_fingerprint: u64,
 }
 
 impl BootstrapArtefacts {
     /// Create empty artefacts (useful as a cold-start fallback).
     pub fn empty() -> Self {
         Self {
-            registry:     CategoryRegistry::new(),
-            trd_profiles: HashMap::new(),
-            edge_vocab:   HashMap::new(),
+            registry:            CategoryRegistry::new(),
+            trd_profiles:        HashMap::new(),
+            edge_vocab:          HashMap::new(),
+            partition_fingerprint: 0,
         }
     }
 }
@@ -73,21 +77,29 @@ pub fn load_bootstrap(dir: &Path) -> BootstrapArtefacts {
     let mut artefacts = BootstrapArtefacts::empty();
 
     // ── Load categories ─────────────────────────────────────────────────────
+    // §5d: schema changed from {id, label, centroid, count} to {id, descriptor: [str], size: int}
     let cat_path = dir.join("categories.json");
     if cat_path.exists() {
         if let Ok(data) = std::fs::read_to_string(&cat_path) {
+            // §20.1: Compute FNV-1a fingerprint over the raw category bytes.
+            const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+            const FNV_PRIME:  u64 = 0x0000_0100_0000_01b3;
+            artefacts.partition_fingerprint = data.bytes()
+                .fold(FNV_OFFSET, |h, b| h.wrapping_mul(FNV_PRIME) ^ b as u64);
+
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                 if let Some(arr) = json.as_array() {
                     for item in arr {
-                        let label = item["label"].as_str().unwrap_or("").to_string();
-                        let count = item["count"].as_u64().unwrap_or(0) as usize;
-                        let centroid: Vec<f32> = item["centroid"]
+                        // New format: descriptor array + size
+                        let descriptor: Vec<String> = item["descriptor"]
                             .as_array()
-                            .map(|a| a.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+                            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                             .unwrap_or_default();
-                        // All category IDs are discovered clusters; register each one.
-                        // The registry assigns its own sequential ID starting from 1.
-                        artefacts.registry.register(centroid, label, count);
+                        let size = item["size"].as_u64()
+                            .or_else(|| item["count"].as_u64()) // backward compat
+                            .unwrap_or(0) as usize;
+                        let label = descriptor.first().cloned().unwrap_or_default();
+                        artefacts.registry.register(descriptor, label, size);
                     }
                 }
             }

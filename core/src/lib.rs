@@ -3,7 +3,7 @@
 //! Architecture:
 //! - `atms`        — Horn-clause ATMS (base) + BF-ATMS (causal counterfactual)
 //! - `arg`         — Active Relative Graph: context stack, TRs, lifting, e-graph, graphica
-//! - `adaptive`    — TRD-relative VDBE thresholds + per-TRD performance EMA
+//! - `adaptive`    — VAT (Variance-Adaptive Thresholds) + per-TRD performance EMA
 //! - `scheduler`   — b/t-level list scheduling, ATMS-integrated state machine
 //! - `constraints` — SHACL structural validation, sheaf coherence, modal type checking
 //! - `causal`      — SCM, causal bootstrapping, do(e=absent) interventions

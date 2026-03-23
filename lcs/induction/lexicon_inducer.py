@@ -19,6 +19,67 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _fnv_hash(s: str) -> int:
+    h = 0x811c9dc5
+    for b in s.encode():
+        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+class SuffixParadigmLattice:
+    """
+    Induces lemma equivalence classes from distributional context.
+    Two surface forms are co-assigned a lemma_id when:
+      cosine_sim(context_vector(form_a), context_vector(form_b)) >= threshold
+    Context vectors are co-occurrence counts over a sliding window.
+    """
+
+    def __init__(self, window: int = 3, threshold: float = 0.85) -> None:
+        self.window     = window
+        self.threshold  = threshold
+        self._contexts: dict[str, dict[str, int]] = {}   # form → neighbor counts
+        self._lemma_ids: dict[str, int] = {}
+
+    def observe(self, surface: str, neighbors: list[str]) -> None:
+        c = self._contexts.setdefault(surface, {})
+        for n in neighbors:
+            c[n] = c.get(n, 0) + 1
+
+    def commit(self) -> None:
+        """Assign lemma_ids by merging forms with similar context vectors."""
+        forms = list(self._contexts.keys())
+        assigned: dict[str, int] = {}
+        next_id = 1
+        for i, form_a in enumerate(forms):
+            if form_a in assigned:
+                continue
+            assigned[form_a] = next_id
+            for form_b in forms[i + 1:]:
+                if form_b not in assigned:
+                    if self._cosine(form_a, form_b) >= self.threshold:
+                        assigned[form_b] = next_id
+            next_id += 1
+        self._lemma_ids = assigned
+
+    def lemma_id(self, surface: str) -> int:
+        if surface in self._lemma_ids:
+            return self._lemma_ids[surface]
+        return _fnv_hash(surface) & 0xFFFFFFFF
+
+    def _cosine(self, form_a: str, form_b: str) -> float:
+        a = self._contexts.get(form_a, {})
+        b = self._contexts.get(form_b, {})
+        keys = set(a) | set(b)
+        if not keys:
+            return 0.0
+        dot   = sum(a.get(k, 0) * b.get(k, 0) for k in keys)
+        norm_a = sum(v * v for v in a.values()) ** 0.5
+        norm_b = sum(v * v for v in b.values()) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+
 @dataclass
 class LexEntry:
     """One (lemma, ucca_cat) pair with frequency-derived probability."""

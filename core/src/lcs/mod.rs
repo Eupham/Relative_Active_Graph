@@ -1,5 +1,5 @@
 //! Linguistic Conversion System: tokenised text → MTLG modal graph.
-//! No external parser. Categories learned online via k-means.
+//! No external parser. Categories assigned by bisimulation partition refinement (Paige & Tarjan 1987).
 
 pub mod token_types;
 pub mod converter;

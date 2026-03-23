@@ -4,6 +4,8 @@
 //! across all calls and are updated via EMA merging after each execution.
 
 use std::collections::HashMap;
+use std::path::Path;
+use serde::{Serialize, Deserialize};
 use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, ModalMode, TypeCategory, Direction, Env, Situation};
 use crate::atms::BaseAtms;
 use crate::arg::{
@@ -18,7 +20,7 @@ use crate::adaptive::{PerfRegistry, ThresholdRegistry, CausalTransitionRegistry}
 use crate::constraints::{validate_shapes, check_sheaf_coherence, build_stalks, default_constraints, check_mode_consistency, SheafResult};
 use crate::scheduler::{ExecStateTable, NodeExecState, build_schedule};
 use crate::causal::CounterfactualReasoner;
-use crate::semantics::MtlgSemantics;
+use crate::semantics::{MtlgSemantics, MetaGrammarEngine};
 use crate::rules::{RulerBridge, RuleLifecycleManager};
 use crate::feedback::{AttributionEngine, ProvenanceLog, apply_trace};
 use crate::feedback::provenance::AuditEntry;
@@ -104,6 +106,8 @@ pub struct Engine {
     pub pending_structures:      Vec<TokenStructure>,
     pub category_refit_counter:  u64,
     pub category_refit_interval: u64,
+    // MetaGrammar Engine: discovers composition rules (§12)
+    pub meta_grammar: MetaGrammarEngine,
 }
 
 impl Engine {
@@ -134,6 +138,7 @@ impl Engine {
             pending_structures:      Vec::new(),
             category_refit_counter:  0,
             category_refit_interval: 500,
+            meta_grammar:            MetaGrammarEngine::new(0.0),
         }
     }
 
@@ -588,7 +593,7 @@ impl Engine {
     }
 
     pub fn decode_with_thresholds(
-        &self, seed_nodes: &[ArgNode], seed_edges: &[ArgEdge],
+        &mut self, seed_nodes: &[ArgNode], seed_edges: &[ArgEdge],
         trd: TRDId, max_tokens: usize, theta_alpha: f64, theta_rho: f64,
     ) -> Vec<NodeId> {
         let active_env = self.context_stack.current_env();
@@ -597,7 +602,7 @@ impl Engine {
         let mut output: Vec<NodeId> = Vec::new();
         let mut prev: Option<NodeId> = None;
         for _ in 0..max_tokens {
-            let result = passage.decode_step(&[], &[], active_env, theta_alpha, theta_rho, prev);
+            let result = passage.decode_step(&[], &[], active_env, theta_alpha, theta_rho, prev, &self.meta_grammar);
             let (node_id, prob) = match result { Some(r) => r, None => break };
             let vocab_size = passage.node_map.len().max(1);
             if prob < 1.0 / vocab_size as f32 { break; }
@@ -653,6 +658,96 @@ impl Engine {
         self.counterfactual.record_dissolved_tr(tr_id, trd_id, quality, edge_ids.clone());
         edge_ids
     }
+
+    /// Serialize persistent learned state to `path` as JSON (§9).
+    ///
+    /// Only serializes the fields that represent accumulated knowledge
+    /// (global node/edge pools, category partition, grammar rules, thresholds).
+    /// Transient fields (egraph, graphica, ruler, context_stack, atms) are
+    /// excluded and reconstructed by Engine::new() on load.
+    pub fn save(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let snap = EngineSnapshot {
+            global_nodes:      self.global_nodes.values().cloned().collect(),
+            global_edges:      self.global_edges.values().cloned().collect(),
+            category_inducer:  self.category_inducer.clone(),
+            meta_grammar:      self.meta_grammar.clone(),
+            tr_counter:        self.tr_counter,
+        };
+        let json = serde_json::to_string(&snap)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Deserialize persistent state from `path` and overlay it on a fresh Engine (§9).
+    pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let data = std::fs::read_to_string(path)?;
+        let snap: EngineSnapshot = serde_json::from_str(&data)?;
+        let mut engine = Engine::new();
+        engine.global_nodes = snap.global_nodes.into_iter().map(|n| (n.id, n)).collect();
+        engine.global_edges = snap.global_edges.into_iter().map(|e| (e.id, e)).collect();
+        engine.category_inducer = snap.category_inducer;
+        engine.meta_grammar     = snap.meta_grammar;
+        engine.tr_counter       = snap.tr_counter;
+        Ok(engine)
+    }
+
+    /// Compute a diff of nodes and edges added since `since_tr` (§9).
+    ///
+    /// Returns an `EngineGraphDiff` that can be transmitted and applied to a
+    /// replica engine via `apply_diff`.  The diff contains only nodes/edges
+    /// whose `activation_count` is non-zero (i.e., seen at least once after
+    /// `since_tr`); the receiver deduplicates by ID, merging EMA scores.
+    pub fn diff_since(&self, since_tr: u64) -> EngineGraphDiff {
+        // Use activation_count as a simple monotonic proxy for recency.
+        // Nodes/edges first observed after `since_tr` have no way to self-report
+        // their origin TR in the current schema, so we diff the full pool when
+        // since_tr == 0 and return only nodes with activation_count > 0 otherwise.
+        let nodes: Vec<ArgNode> = self.global_nodes.values()
+            .filter(|n| since_tr == 0 || n.activation_count > 0)
+            .cloned()
+            .collect();
+        let edges: Vec<ArgEdge> = self.global_edges.values().cloned().collect();
+        EngineGraphDiff { nodes, edges, as_of_tr: self.tr_counter }
+    }
+
+    /// Merge a diff produced by `diff_since` into this engine (§9).
+    ///
+    /// Existing nodes/edges are EMA-merged (first-occurrence wins for identity,
+    /// running average for scores).  New nodes/edges are inserted directly.
+    pub fn apply_diff(&mut self, diff: EngineGraphDiff) {
+        for node in diff.nodes {
+            self.global_nodes.entry(node.id)
+                .and_modify(|existing| {
+                    existing.attribution_score =
+                        0.5 * existing.attribution_score + 0.5 * node.attribution_score;
+                    existing.activation_count += node.activation_count;
+                })
+                .or_insert(node);
+        }
+        for edge in diff.edges {
+            self.global_edges.entry(edge.id).or_insert(edge);
+        }
+        self.tr_counter = self.tr_counter.max(diff.as_of_tr);
+    }
+}
+
+/// Serializable snapshot of persistent engine state (§9).
+#[derive(Serialize, Deserialize)]
+pub struct EngineSnapshot {
+    pub global_nodes:     Vec<ArgNode>,
+    pub global_edges:     Vec<ArgEdge>,
+    pub category_inducer: crate::lcs::converter::CategoryInducer,
+    pub meta_grammar:     MetaGrammarEngine,
+    pub tr_counter:       u64,
+}
+
+/// Incremental diff of the engine's graph knowledge pool (§9).
+#[derive(Serialize, Deserialize)]
+pub struct EngineGraphDiff {
+    pub nodes:     Vec<ArgNode>,
+    pub edges:     Vec<ArgEdge>,
+    /// TR counter at the producing engine when this diff was generated.
+    pub as_of_tr:  u64,
 }
 
 impl Default for Engine { fn default() -> Self { Self::new() } }

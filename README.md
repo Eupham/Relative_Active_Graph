@@ -5,7 +5,7 @@ type-logical semantic composition with adaptive learning.
 
 The system grounds natural language in formal semantics (MTLG / DRS / UCCA / AMR)
 and uses situation-relative reasoning with ATMS-backed truth maintenance,
-causal SCMs, and variance-adaptive activation thresholds (VDBE).
+causal SCMs, and Variance-Adaptive Thresholds (VAT).
 
 ---
 
@@ -26,10 +26,10 @@ current codebase — no inline source copies.
 | Step | Description |
 |------|-------------|
 | 1 | **Clone repo from GitHub** — source modules loaded from the live codebase |
-| 2 | Install dependencies (`datasets`, `stanza`, `numpy`, `scipy`, `networkx`, `streamlit`, `pyngrok`, …) |
-| 3 | Add repo modules to path; download Stanza UD model |
-| 4 | Configure demo parameters (`TRAIN_SAMPLES`, `HELD_OUT`, `N_TRD_CLUSTERS`) |
-| 5–8 | **Stream C4** → parse UD → MTLG graphs → induce lexicon → bootstrap TRDs → evaluate held-out |
+| 2 | Install dependencies (`datasets`, `leidenalg`, `python-igraph`, `numpy`, `scipy`, `networkx`, `streamlit`, `pyngrok`, …) |
+| 3 | Add repo modules to path |
+| 4 | Configure demo parameters (`TRAIN_SAMPLES`, `HELD_OUT`) |
+| 5–8 | **Stream C4** → boundary induction → MTLG graphs → induce lexicon → bootstrap TRDs (SBM Leiden MDL) → evaluate held-out |
 | 9 | **Integration test suite** — 5 canonical sentences verified end-to-end (parse, lexicon, TRD) |
 | 10 | Visualise modal mode and UCCA category distributions |
 | 11 | **Inference demo** — analyse new sentences with the trained model |
@@ -85,7 +85,7 @@ Relative_Active_Graph/
 │       ├── engine.rs              # 13-step main reasoning loop
 │       ├── arg/                   # Active Relative Graph (lazy, budget-bounded)
 │       ├── atms/                  # Base ATMS + BF-ATMS (counterfactuals)
-│       ├── adaptive/              # VDBE threshold registry + EMA performance
+│       ├── adaptive/              # VAT (Variance-Adaptive Thresholds) + EMA performance
 │       ├── scheduler/             # b/t-level list scheduling + critical path
 │       ├── constraints/           # SHACL shapes + sheaf coherence + Z3
 │       ├── causal/                # SCM + interventions + counterfactuals
@@ -99,11 +99,11 @@ Relative_Active_Graph/
     ├── requirements.txt           # Python dependencies
     ├── induction/                 # Python induction pipeline
     │   ├── mc4_stream.py          # C4 / mC4 streaming (108 languages)
-    │   ├── ud_parser.py           # Stanza UD wrapper
-    │   ├── ud_to_mtlg.py          # UD tree → MTLG modal graph
+    │   ├── boundary_inducer.py    # Grammar-driven character-level boundary induction
+    │   ├── community_inducer.py   # SBM Leiden MDL community detection
     │   ├── morphological_fst.py   # FST decomposition (Turkish, Finnish, …)
     │   ├── mtlg_inducer.py        # Probabilistic lexicon induction (MLE)
-    │   ├── trd_bootstrap.py       # TRD k-means crystallisation
+    │   ├── lexicon_inducer.py     # SuffixParadigmLattice (Goldsmith 2001)
     │   ├── hol_to_lc.py           # HOL ↔ λ-calculus conversion
     │   └── test_pipeline.py       # Integration test
     └── training/                  # Rust-Python training bridges

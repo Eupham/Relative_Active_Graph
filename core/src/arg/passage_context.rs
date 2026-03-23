@@ -127,16 +127,18 @@ impl PassageContext {
         self.sentence_count += 1;
     }
 
-    /// Perform one inference step: predict the next token from current context,
+    /// Perform one inference step using L-System expansion to generate candidates,
     /// then commit the prediction to the accumulated graph.
     ///
     /// Returns:
-    /// - The predicted NodeId (argmax of VocabDistribution).
+    /// - The predicted NodeId (first non-empty token from LSystemExpander, or
+    ///   argmax of VocabDistribution when no rules apply — identity expansion).
     /// - The probability of that prediction (for stopping condition).
     ///
-    /// Mirrors `step()` exactly: build graph from current context, score it,
-    /// select best node, commit it, create sequential edge from prev.
-    /// No attribution is applied.
+    /// The axiom is the previous node (or highest-attribution node if no prev).
+    /// LSystemExpander::expand drives generative decoding via MetaGrammarEngine rules.
+    /// When the rule set is empty the L-System is the identity: every node expands to
+    /// itself, which degrades gracefully to the VocabDistribution argmax baseline.
     pub fn decode_step(
         &mut self,
         node_pool:    &[ArgNode],
@@ -145,17 +147,48 @@ impl PassageContext {
         theta_alpha:  f64,
         theta_rho:    f64,
         prev_node_id: Option<NodeId>,
+        meta_grammar: &crate::semantics::MetaGrammarEngine,
     ) -> Option<(NodeId, f32)> {
-        use crate::generation::VocabDistribution;
+        use crate::generation::{LSystemExpander, GeneratedToken, VocabDistribution};
 
         // Snapshot context before committing candidates.
         let search = self.build_graph(active_env, theta_alpha, theta_rho);
-        let dist = VocabDistribution::from_graph(&search.graph, active_env);
 
-        // Select highest-probability node.
-        let (predicted_id, predicted_prob) = dist.probs.iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .copied()?;
+        // Choose axiom: the previous node if present, else highest-attribution node.
+        let axiom_id: Option<NodeId> = prev_node_id.or_else(|| {
+            self.node_map.values()
+                .filter(|n| n.atms_label == 0 || (n.atms_label & active_env) != 0)
+                .max_by(|a, b| a.attribution_score.partial_cmp(&b.attribution_score)
+                    .unwrap_or(std::cmp::Ordering::Equal))
+                .map(|n| n.id)
+        });
+
+        // Run L-System expansion if we have an axiom node.
+        let lsystem_prediction: Option<NodeId> = axiom_id
+            .and_then(|aid| self.node_map.get(&aid).cloned())
+            .and_then(|axiom_node| {
+                let expander = LSystemExpander::new(meta_grammar);
+                let tokens = expander.expand(&axiom_node, active_env, 0);
+                // First token that resolves to a known NodeId wins.
+                tokens.into_iter().find_map(|t| match t {
+                    GeneratedToken::Node(nid) if self.node_map.contains_key(&nid) => Some(nid),
+                    GeneratedToken::Leaf(_) => axiom_id, // surface leaf → reuse axiom id
+                    _ => None,
+                })
+            });
+
+        // Fall back to VocabDistribution argmax (identity-expansion path).
+        let dist = VocabDistribution::from_graph(&search.graph, active_env);
+        let (predicted_id, predicted_prob) = lsystem_prediction
+            .and_then(|nid| {
+                // Use the VocabDistribution probability for the L-System prediction if available.
+                dist.probs.iter().find(|&&(id, _)| id == nid).copied()
+            })
+            .or_else(|| {
+                dist.probs.iter()
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .copied()
+            })?;
 
         // Commit the candidate pool so future steps see these nodes.
         for n in node_pool {
@@ -166,9 +199,6 @@ impl PassageContext {
         }
 
         // Suppress the selected node so the next decode step picks a different one.
-        // Without this, VocabDistribution is static (attribution_score never changes)
-        // and argmax always returns the same node, causing the repetition check to
-        // fire on the second iteration — producing only 1-token outputs.
         if let Some(node) = self.node_map.get_mut(&predicted_id) {
             node.attribution_score = f32::NEG_INFINITY;
         }

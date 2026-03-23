@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from tokenizer import tokenize
+from boundary_inducer import BoundaryInducer
 from text_to_graph import text_to_mtlg
 from mtlg_inducer import MtlgInducer
 from mc4_stream import stream_mc4

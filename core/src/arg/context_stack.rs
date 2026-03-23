@@ -10,27 +10,52 @@ use crate::arg::{
     situation::SituationRegistry,
 };
 
+/// A predication condition in a DRS with accessibility tracking.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrsCondition {
+    pub predicate:    String,
+    pub args:         Vec<String>,
+    /// Depth at which this condition originated. 0 = top-level, n = lifted from depth n.
+    pub origin_depth: usize,
+}
+
 /// Discourse Referent Set accumulated within a context.
 #[derive(Clone, Debug, Default)]
 pub struct Drs {
     /// Variables introduced by TRs in this context.
     pub referents:  Vec<String>,
-    /// Predication conditions: (predicate, args).
-    pub conditions: Vec<(String, Vec<String>)>,
+    /// Predication conditions with origin depth (Kamp & Reyle 1993 §1.3).
+    pub conditions: Vec<DrsCondition>,
 }
 
 impl Drs {
     pub fn extend_from_tr(&mut self, content: &RepContent) {
+        self.extend_from_tr_at_depth(content, 0);
+    }
+
+    pub fn extend_from_tr_at_depth(&mut self, content: &RepContent, depth: usize) {
         if let RepContent::DrsUpdate { referents, conditions } = content {
             for r in referents { if !self.referents.contains(r) { self.referents.push(r.clone()); } }
-            for c in conditions { self.conditions.push((c.clone(), vec![])); }
+            for c in conditions {
+                let cond = DrsCondition { predicate: c.clone(), args: vec![], origin_depth: depth };
+                if !self.conditions.contains(&cond) { self.conditions.push(cond); }
+            }
         }
     }
 
-    /// Lift referents to a parent DRS (on context pop).
+    /// Lift referents AND conditions to a parent DRS (on context pop).
+    /// Per Kamp & Reyle 1993 §1.3: both referents and conditions must be accessible
+    /// from a parent DRS.
     pub fn lift_to(&self, parent: &mut Drs) {
         for r in &self.referents {
             if !parent.referents.contains(r) { parent.referents.push(r.clone()); }
+        }
+        // Conditions MUST be lifted. Accessibility is the parent's responsibility.
+        // Per Kamp & Reyle 1993 §1.3.
+        for cond in &self.conditions {
+            if !parent.conditions.contains(cond) {
+                parent.conditions.push(cond.clone());
+            }
         }
     }
 }
@@ -78,11 +103,18 @@ impl ContextStack {
     }
 
     /// Push: activate A(s); look up TRD; build G(s) lazily (search module does this).
+    /// Returns ContextId. On AtmsError::AssumptionSpaceExhausted, logs and uses env=0 fallback.
     pub fn push(&mut self, situation_id: u64, trd: Option<TRDId>) -> ContextId {
         let id = self.next_ctx_id;
         self.next_ctx_id += 1;
         let parent = self.frames.last().map(|f| f.id);
-        let env = self.bridge.push(id);
+        let env = match self.bridge.push(id) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("ContextStack::push: {e}; using env=0 fallback");
+                0
+            }
+        };
         self.frames.push(ContextFrame::new(id, situation_id, env, trd, parent));
         id
     }
@@ -135,9 +167,10 @@ impl ContextStack {
         let id = self.next_tr_id;
         self.next_tr_id += 1;
         let ctx_id = self.frames.last().map(|f| f.id).unwrap_or(0);
+        let depth  = self.frames.len();
         let mut tr = Tr::new(id, ctx_id, content.clone(), env, mtlg_type, granularity);
         if let Some(frame) = self.frames.last_mut() {
-            frame.drs.extend_from_tr(&content);
+            frame.drs.extend_from_tr_at_depth(&content, depth);
             frame.active_trs.push(tr);
         }
         id
