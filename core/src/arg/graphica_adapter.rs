@@ -99,13 +99,12 @@ impl GraphicaCache {
         next_edge_id:   EdgeId,
     ) -> Option<crate::arg::edge::ArgEdge> {
         use crate::arg::edge::{ArgEdge, EdgeClass};
-        use crate::arg::symbolica_adapter::normalize_path_weight;
         let result = self.store.get_mut(key)?;
         if result.traversal_count < MIN_SHORTCUT_TRAVERSALS { return None; }
         if result.shortcut_canonical_id.is_some() { return None; }
         let canonical_id = key.hash ^ (canonical_mode as u64).wrapping_mul(0x9e3779b97f4a7c15);
         result.shortcut_canonical_id = Some(canonical_id);
-        let weight = normalize_path_weight(path_weights).clamp(0.01, 1.0);
+        let weight = path_weights.iter().sum::<f32>() / (path_weights.len().max(1) as f32);
         let mut edge = ArgEdge::new(next_edge_id, src, dst, EdgeClass::DEFAULT, canonical_mode);
         edge.weight       = weight;
         edge.canonical_id = Some(canonical_id);
