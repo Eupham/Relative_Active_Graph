@@ -43,15 +43,25 @@ impl Drs {
         }
     }
 
-    /// Lift referents AND conditions to a parent DRS (on context pop).
-    /// Per Kamp & Reyle 1993 §1.3: both referents and conditions must be accessible
-    /// from a parent DRS.
+    /// Lift referents and conditions to a parent DRS on context pop.
+    ///
+    /// Current behaviour: unconditional lift — every referent and condition
+    /// from the child context is copied into the parent on pop(), regardless
+    /// of the context type that triggered the push.
+    ///
+    /// Limitation: Kamp & Reyle (1993, §1.3) establishes that accessibility
+    /// is restricted at scope islands — negation, universal quantification,
+    /// conditionals, and modal subordination all create barriers that prevent
+    /// child referents from being picked up by subsequent anaphora in the
+    /// parent context. This unconditional lift is a simplification that works
+    /// for simple declarative sequences but will produce incorrect scope
+    /// readings for sentences involving quantifier scope, negation, or
+    /// modal subordination. Proper accessibility gating is planned.
     pub fn lift_to(&self, parent: &mut Drs) {
         for r in &self.referents {
             if !parent.referents.contains(r) { parent.referents.push(r.clone()); }
         }
-        // Conditions MUST be lifted. Accessibility is the parent's responsibility.
-        // Per Kamp & Reyle 1993 §1.3.
+        // Unconditional lift. See the doc comment above for the accessibility caveat.
         for cond in &self.conditions {
             if !parent.conditions.contains(cond) {
                 parent.conditions.push(cond.clone());

@@ -1,4 +1,16 @@
-"""Bootstrap-free teacher-forcing trainer. No UD, no Stanza, no bootstrap phase."""
+"""Sequential edge-weight trainer for CSRRE. No UD parser, no Stanza, no bootstrap phase.
+
+Training mechanism:
+    For each passage drawn from C4, the expected node for each step is provided
+    alongside the engine's prediction. The Rust engine adjusts edge weights using
+    a log-scaled CE quality signal (Quality::from_ce in core/src/types.rs).
+
+    The target token constrains each update step — the essential property shared
+    with teacher forcing in sequence models. The difference is that no gradient
+    backpropagation or decoder-state substitution is performed; the update is a
+    direct edge-weight delta applied via the NDJSON bridge. The term
+    'target-constrained sequential training' is more precise for this mechanism.
+"""
 from __future__ import annotations
 import argparse, hashlib, logging
 from dataclasses import dataclass, field
@@ -201,7 +213,9 @@ class SequentialTrainer:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="CSRRE bootstrap-free trainer")
+    parser = argparse.ArgumentParser(
+        description="CSRRE sequential trainer — target-constrained edge-weight updates on C4"
+    )
     parser.add_argument("--lang",             default="en")
     parser.add_argument("--epochs",           type=int, default=1)
     parser.add_argument("--max-sents",        type=int, default=1_000, dest="max_sentences")

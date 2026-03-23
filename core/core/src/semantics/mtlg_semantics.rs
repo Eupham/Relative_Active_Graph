@@ -1,4 +1,15 @@
-//! MTLG Semantics: sentence_level (AMR-like), discourse_level (DRS), modal type extraction.
+//! MTLG Semantics: sentence_level (lambda/proposition graph), discourse_level
+//! (DRS-structured referent sets), modal type extraction.
+//!
+//! Category labels (Scene, Process, State, Connector, Ground, Participant, Adverbial)
+//! follow UCCA naming conventions (Abend & Rappoport 2013) but are assigned here by
+//! bisimulation partition refinement over surface features — not by a trained UCCA
+//! parser or annotation. The AMR-style role labels (ARG0, ARG1, …) used in
+//! PropositionGraph are borrowed from PropBank/AMR conventions for readability;
+//! the underlying representation is a plain lambda term, not an AMR graph.
+//!
+//! Full UCCA and AMR compliance are development targets, not current capabilities.
+//!
 //! Variable capture in substitute() is correctly handled via free variable analysis.
 
 use std::collections::HashMap;

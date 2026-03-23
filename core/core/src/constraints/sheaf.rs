@@ -1,12 +1,17 @@
-//! Discrete sheaf global-section consistency check over G(s).
+//! Triangle coherence check over the ARG graph G(s).
 //!
-//! For each directed triangle (u → v → w, and u → w) in G(s), the restriction
-//! maps along both paths must produce the same expected type at w. A violation
-//! means the two derivation paths are modally inconsistent at their merge point.
+//! For each directed triangle (u → v → w, and u → w) in G(s), the
+//! restriction maps along both paths must produce the same modal type at w.
+//! A violation indicates that the two derivation paths are modally
+//! inconsistent at their shared target node.
 //!
-//! This is a global-section existence check, NOT H¹ computation.
-//! True H¹ requires coboundary operators over a cochain complex
-//! (see Curry, Ghrist & Robinson 2012 for the full algebraic topology treatment).
+//! This is a practical graph consistency check. The module name and the
+//! "sheaf" / "global section" terminology reflect the intended theoretical
+//! grounding in discrete sheaf theory (Curry, Ghrist & Robinson 2012), but
+//! the current implementation counts raw triangle violations rather than
+//! computing cohomology (H¹). Cohomology-based obstruction analysis — which
+//! would require coboundary operators over a cochain complex — is a planned
+//! future extension.
 
 use std::collections::HashMap;
 use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory, Direction};
@@ -46,15 +51,18 @@ pub struct CoherenceViolation {
     pub via_uw_type:    ModalType,
 }
 
-/// Result of the sheaf consistency check.
+/// Result of the triangle coherence check.
 ///
-/// `violation_count` is the number of triangles where the two restriction-map
-/// paths produce different modal types at their shared target.
-/// Zero violations means global sections exist for the observed triangles.
+/// `violation_count` is the number of directed triangles in G(s) where the
+/// two restriction-map paths produce modally inconsistent types at their
+/// shared target. Zero violations means no inconsistencies were found in
+/// the triangles that were checked.
+///
+/// This is not a proof that global sections exist in the sheaf-theoretic
+/// sense; that claim would require a full H¹ coboundary computation.
 #[derive(Debug)]
 pub struct SheafResult {
-    /// Number of triangle coherence violations.
-    /// This is NOT a cohomology rank — it is a raw inconsistency count.
+    /// Raw count of triangle coherence violations. Not a cohomology rank.
     pub violation_count: usize,
     pub violations:      Vec<CoherenceViolation>,
 }

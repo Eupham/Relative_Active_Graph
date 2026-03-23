@@ -1,21 +1,23 @@
-# Generative Inference Execution & Theory Demonstration Summary
+# CSRRE Test Execution Summary
 
-This log and summary represents a localized execution of the Relative Active Graph (RAG) system inference pipeline. It demonstrates the core theories of the system:
-1.  **MTLG Semantic Mapping & Lexicon Induction:** Grounding natural language in formal semantics probabilistically.
-2.  **TRD (Transient Relative Domain) Clustering:** Bootstrapping situation types based on modal type profile vectors.
-3.  **Scalable Non-LLM Generative Inference:** Using formal graph operations (ARG) and a deterministic linearizer to map semantic types back to surface natural language, strictly without utilizing an external LLM.
+This document records what the current tests exercise and what they confirm. It is updated alongside the test suite.
 
-## 1. Python C4 Training & Inference Demonstration
+---
 
-We ran the python component to stream a small subset (500 sentences) from the C4 dataset (mC4 variant). The system parsed sentences into Universal Dependencies (UD) and converted them into MTLG modal graphs.
+## 1. Python Induction Pipeline
 
-### Core Theory Demonstrated: Lexicon Induction and TRD Bootstrapping
-By observing the structural types (mode, UCCA category, and arity) across the training set, the system induced a probabilistic lexicon containing 2088 lemmas. It also clustered the modal type distributions into 16 Transient Relative Domains (TRDs).
+We streamed a small subset of C4 (500 sentences, English) through the Python induction pipeline.
 
-During inference, we tested the sentence:
-> *"The scientist discovered a new particle in the laboratory."*
+### What was run
 
-The outputs successfully demonstrate the application of the induced lexicon to novel data:
+```bash
+python lcs/induction/sequential_trainer.py --lang en --max-sents 500
+```
+
+The pipeline tokenizes each sentence, extracts surface features, assigns modal categories via bisimulation partition refinement, and accumulates a lexicon via MLE over the resulting MTLG graphs.
+
+### Observed output
+
 ```
   Token: The          Lemma: the          Lex Mode: diamond  Lex Cat: Scene
   Token: scientist    Lemma: scientist    Lex Mode: —        Lex Cat: —
@@ -31,54 +33,92 @@ The outputs successfully demonstrate the application of the induced lexicon to n
 Assigned TRD cluster: en_trd_10
 ```
 
-**Why this proves the theory:**
-*   **Semantic Grounding:** Notice how "discovered" is correctly categorized as a `Process` and "new" as a `State`. This means the system successfully learned structural semantics purely from the dependency relationships in the C4 corpus.
-*   **Situation Awareness:** The sentence was successfully mapped to `en_trd_10`. This means the modal profile (the specific mixture of diamonds, processes, states, etc.) was recognized as belonging to a specific cluster of situation types, demonstrating that the reasoning engine can adapt its activation thresholds based on context.
-*   **Zero External Parser:** This entire process relies on grammar-driven boundary induction (BoundaryInducer) and formal type induction (MTLG). No Stanza, no UD parser, no pre-trained models.
+Lexicon size after 500 sentences: ~2088 lemmas. TRD clusters found: 16.
 
-## 2. Rust Generative Inference Demonstration
+### What this confirms
 
-We created a Rust integration test (`test_generative_inference_pipeline`) to exercise the core engine's generative capabilities. The goal of generative inference is to take a formal semantic representation (an ARG graph or a proposition) and surface it into natural language.
+- The induction pipeline runs to completion against a live C4 stream.
+- Surface features are extracted and modal categories assigned without an external UD parser.
+- The lexicon grows monotonically from the stream.
+- TRD clustering produces stable cluster assignments across runs.
 
-### Core Theory Demonstrated: Linearization and Hypothesis Generation
-The test builds a mock Active Relative Graph (ARG) with nodes representing predicates ("run") and participants ("alice"). It simulates the `generation::hypothesis` module creating a hypothesis ranking, and then uses the `Linearizer` to construct the surface form.
+### What this does not confirm
 
-**Log Output:**
-```bash
-running 1 test
-Generative Inference Integration Test Passed:
- - Validated Hypothesis semantic mapping.
- - Successfully localized 'run(alice)' to 'runs Alice'
+- Category labels (Scene, Process, State, …) follow UCCA naming conventions but are assigned by bisimulation partition refinement over surface features, not by a trained UCCA model. The correspondence to UCCA semantics is structural intent, not verified alignment.
+- Tokens with `Lex Cat: —` were not assigned a category. This is expected at 500 sentences; coverage improves with more training data.
+
+---
+
+## 2. Rust Linearizer and Type-Filter Unit Test
+
+```
 test test_generative_inference_pipeline ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed
 ```
 
-**Why this proves the theory:**
-*   **Type Satisfiability:** The test verifies that `filter_satisfying` correctly matches a hypothesis representing a `Scene` (the functor `run(x)`) against a query expecting a `Scene`. This proves the core type-checking mechanism works.
-*   **Deterministic Generation (No LLM):** The `Linearizer` successfully takes the proposition `run(alice)` and uses the per-language lexicon to look up the surface forms ("runs" and "Alice"), assembling them into "runs Alice". This demonstrates that the system can generate text directly from formal logical structures (λ-expressions/MTLG derivations) scaling perfectly without the overhead or unpredictability of an LLM.
+### What was run
 
-## 3. End-to-End English-to-English Response Demonstration
+`core/core/tests/test_generative_inference.rs` — `test_generative_inference_pipeline`
 
-To fully prove the system's ability to act natively via language inputs without relying on LLMs, we bridged both the python parsers and the rust engine using an orchestration script (`test_e2e_english.py`).
+### What the test does
 
-The script consumes a plain English sentence, processes its semantic shape into formal query payloads, feeds it into the strict Rust engine logic constraints, and generates the resulting natural language surface word directly.
+The test manually constructs a `Hypothesis` with a hard-coded predicate (`run(alice)`) and registers the corresponding surface forms directly into the `Linearizer` lexicon. It does not run the induction pipeline or `generate_hypotheses`. It then verifies:
 
-**Log Output:**
-```bash
+1. `filter_satisfying` accepts the hypothesis against a compatible expected type.
+2. `Linearizer::linearize` assembles `"runs Alice"` from the registered entries.
+
+### What this confirms
+
+- The type-filter correctly matches a functor hypothesis against a compatible expected type.
+- The linearizer assembles surface strings from registered predicate→surface mappings in root-first order.
+
+### What this does not confirm
+
+- End-to-end generation from unseen input. The hypothesis and lexicon are both provided directly by the test; neither the induction pipeline nor the hypothesis generation search is exercised.
+
+---
+
+## 3. End-to-End IPC Path Test
+
+```
 $ python test_e2e_english.py "Alice discovered a particle."
---- Input (Plain English) ---
+--- Input ---
 Alice discovered a particle.
 
---- Running Inference Engine (Rust) ---
-
---- Output (Plain English) ---
+--- Output ---
 Alice
 ```
 
-**Why this proves the theory:**
-*   **English-to-English Capability:** The engine successfully consumed plain English, parsed it structurally (UD/MTLG nodes), injected the semantic mapping into its graph resolution flow, and yielded deterministic, formalized generation back out as plain English (linearized `Alice`).
-*   **A Scalable Graph Engine:** Because the flow converts raw language to rigid type/arity graphs, there is zero ambiguity or hallucination potential unlike an LLM. It guarantees a highly scalable, structurally reliable inference mapping process using dependency semantics logic.
+### What was run
 
-## Conclusion
-The combined tests prove the system's end-to-end viability. It can learn semantic mappings from raw text (Python/C4) and use those formal structures to perform logical operations and generate natural language responses deterministically (Rust/Core) in a highly scalable architecture.
+`test_e2e_english.py` — tokenizes the input sentence, converts it to an MTLG graph, serializes it as NDJSON, sends it through the subprocess bridge to the compiled Rust CLI binary, and prints the returned surface token.
+
+### What this confirms
+
+- The tokenizer and MTLG converter run correctly on a plain English sentence.
+- The NDJSON payload reaches the CLI and is parsed without error.
+- The Rust engine executes a query and returns a JSON response.
+- The Python → Rust subprocess IPC path is functional end to end.
+
+### Why the output is a single token
+
+The lexicon is seeded only from the input sentence's surface forms via `register_lexicon` messages immediately before the query. No trained lexicon is loaded at startup. With only the input tokens registered, the engine selects the highest-attribution node in the graph, which in this case is `Alice`.
+
+Multi-token generation requires a persisted, trained lexicon passed to the CLI at startup via `--load-state` or an equivalent mechanism. That is the next milestone for this test.
+
+---
+
+## Current Status
+
+| Capability | Status |
+|---|---|
+| C4 streaming + lexicon induction | Working |
+| TRD clustering | Working |
+| Type-filter and linearizer (seeded lexicon) | Working |
+| Python → Rust IPC path | Working |
+| Multi-token generation from cold start | Not yet demonstrated |
+| DRS scope restriction at quantifier boundaries | Not yet implemented |
+| UCCA/AMR category assignment via trained parser | Not yet implemented |
+| Trained lexicon persistence across sessions | Not yet implemented |
+
+These are the active development targets.

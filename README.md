@@ -3,31 +3,43 @@
 A **Constraint-Scheduled Reactive Reasoning Engine** implementing multimodal
 type-logical semantic composition with adaptive learning.
 
-The system grounds natural language in formal semantics (MTLG / DRS / UCCA / AMR)
-and uses situation-relative reasoning with ATMS-backed truth maintenance,
-causal SCMs, and Variance-Adaptive Thresholds (VAT).
+The system builds a graph representation of natural language using modal type logic
+(MTLG), maintains contextual consistency via an ATMS, and learns edge-weight
+associations from streaming text (C4). Discourse referents are tracked in
+DRS-structured context frames. Category labels follow UCCA/AMR naming conventions;
+full compliance with those formalisms is a development target, not a current
+capability.
 
 ---
 
 ## App Launcher — Notebook
 
-`Launch.ipynb` starts the **full application stack in one go**: FastAPI backend,
-React dashboard, and Streamlit UI (fallback when npm is unavailable).
+`Launch.ipynb` starts the full application stack: FastAPI backend, React dashboard,
+and Streamlit UI (fallback when npm is unavailable).
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eupham/Relative_Active_Graph/blob/master/Launch.ipynb)
+Run it locally:
 
-### What the launcher does
+```bash
+pip install notebook
+jupyter notebook Launch.ipynb
+```
 
-| Step | Description |
+The notebook is structured as four cells — run them in order:
+
+| Cell | What it does |
 |------|-------------|
-| 1 | Clone repo from GitHub (Colab only — skipped when already present) |
-| 2 | Install Python deps (`lcs/requirements.txt`, `fastapi`, `uvicorn`, `pyngrok`) |
-| 3 | Build Rust engine via `cargo build --release` (skipped if binary exists or cargo unavailable) |
-| 4 | Install React frontend deps (`npm install`) |
-| 5 | Start FastAPI backend on port 8000, React dashboard on port 3000 (or Streamlit on 8501) |
-| 6 | **Colab**: expose services via ngrok and print public URLs — **Local**: print `localhost` URLs |
+| 1 | Install Python deps (`lcs/requirements.txt`, `fastapi`, `uvicorn`) |
+| 2 | Build Rust engine via `cargo build --release` (skipped if binary exists) |
+| 3 | Install React frontend deps (`npm install`) |
+| 4 | Start FastAPI on port 8000 and React on port 3000 (or Streamlit on 8501); print localhost URLs |
 
-A final optional cell shuts everything down cleanly.
+A final optional cell sends SIGTERM to all started processes.
+
+**Note:** The notebook runs locally only. The previous Colab integration used
+`google.colab.kernel.proxyPort` and `eval_js`, which are no longer reliable across
+Colab runtime versions and have been removed. If you need Colab compatibility, open
+`Launch.ipynb`, skip the React/npm cell, and run `app.py` via Streamlit in a Colab
+cell manually.
 
 ---
 
@@ -41,8 +53,8 @@ streamlit run app.py
 ```
 
 The UI provides two tabs:
-- **Train** — stream C4, induce lexicon, bootstrap TRDs with live progress bars
-- **Inference & Visualization** — analyse sentences and render MTLG dependency graphs
+- **Train** — stream C4, build lexicon and TRD clusters with live progress
+- **Inference & Visualization** — tokenize a sentence, render its MTLG graph, and query the Rust engine for a surface output
 
 ---
 
@@ -55,12 +67,16 @@ cd lcs/induction
 python test_pipeline.py
 ```
 
-Full end-to-end test (requires Rust build):
+Full end-to-end IPC path test (requires Rust build):
 
 ```bash
 cargo build --release
-python test_e2e_english.py
+python test_e2e_english.py "Alice discovered a particle."
 ```
+
+Expected output is a single token (`Alice`). This confirms the Python → Rust subprocess
+path is functional. Multi-token generation requires a trained lexicon loaded at engine
+startup; see `test_summary.md` for current status.
 
 ---
 
@@ -81,7 +97,8 @@ Relative_Active_Graph/
 │       ├── scheduler/             # b/t-level list scheduling + critical path
 │       ├── constraints/           # SHACL shapes + sheaf coherence + Z3
 │       ├── causal/                # SCM + interventions + counterfactuals
-│       ├── semantics/             # MTLG semantics (AMR + DRS + UCCA)
+│       ├── semantics/             # MTLG semantics (lambda/proposition + DRS referent sets;
+│       │                          #   UCCA/AMR naming used for categories, full parsers not included)
 │       ├── generation/            # Progressive deepening + lineariser
 │       ├── feedback/              # Attribution + provenance + edge updates
 │       ├── rules/                 # Rule induction lifecycle (Ruler)
@@ -99,7 +116,7 @@ Relative_Active_Graph/
     │   ├── hol_to_lc.py           # HOL ↔ λ-calculus conversion
     │   └── test_pipeline.py       # Integration test
     └── training/                  # Rust-Python training bridges
-        ├── sequential_trainer.py  # Teacher-forcing on C4
+        ├── sequential_trainer.py  # Sequential edge-weight training on C4
         ├── bootstrap_trainer.py   # Phase 0: bootstrap artefacts
         ├── c4_sequence_extractor.py
         └── rust_bridge.py         # Subprocess NDJSON bridge

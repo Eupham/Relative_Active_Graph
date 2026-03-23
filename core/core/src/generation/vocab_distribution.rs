@@ -1,5 +1,5 @@
 //! VocabDistribution: softmax over active ARG nodes for P(token|context).
-//! Maps cross-entropy gradient to Quality signal for teacher forcing.
+//! Maps a log-scaled CE signal to the Quality type for sequential edge-weight updates.
 //! Vocabulary identity is the NodeId itself — not a transient edge ID.
 
 use crate::types::{NodeId, Quality, Env};
@@ -64,7 +64,8 @@ impl VocabDistribution {
     ///
     /// Returns:
     /// - `q_correct`: positive quality for the expected node's incoming edges
-    ///   (pull toward correct). Signal = (1 - P(expected)).
+    ///   (pull toward correct). Signal = -ln(P(expected)) / LN_SCALE, normalised to [0, 1].
+    ///   LN_SCALE = 7.0; see Quality::from_ce.
     /// - `q_wrong`: if the top-scoring node differs from expected, a negative
     ///   quality for that node's incoming edges (push away from wrong).
     ///   Signal = -P(wrong).
@@ -115,14 +116,17 @@ mod tests {
 
     #[test]
     fn ce_quality_low_prob_gives_high_update_signal() {
-        // from_ce returns (1 - p_predicted) when correct: low prob → large update signal.
+        // from_ce (correct branch) returns -ln(p) / LN_SCALE where LN_SCALE = 7.0.
+        // At p = 0.1: -ln(0.1)/7.0 ≈ 0.33. At p = 0.01: ≈ 0.66.
+        // n1 has attribution_score = 0.01 so that softmax yields a very low
+        // probability and the signal reliably exceeds 0.5.
         let mut g: ArgGraph = StableGraph::new();
         let mt = ModalType::functor(ModalMode::Diamond, TypeCategory::DEFAULT, 1, Direction::Right);
         let mut n1 = ArgNode::new(1, NodeClass::DEFAULT, mt, (0, 0));
-        n1.attribution_score = 0.1; // low prob (model uncertain)
+        n1.attribution_score = 0.01; // very low logit → low p after softmax → signal > 0.5
         n1.atms_label = 0b1;
         let mut n2 = ArgNode::new(2, NodeClass::DEFAULT, mt, (0, 0));
-        n2.attribution_score = 10.0; // dominant (wrong answer)
+        n2.attribution_score = 10.0; // dominant node
         n2.atms_label = 0b1;
         g.add_node(n1);
         g.add_node(n2);
@@ -130,7 +134,7 @@ mod tests {
         let p_n1 = dist.probs.iter().find(|&&(nid, _)| nid == 1).map(|&(_, p)| p).unwrap_or(0.0);
         let q = Quality::from_ce(p_n1, true);
         assert!(q.as_f32() > 0.5,
-            "low-prob correct prediction gives large CE update signal (1 - p ≈ high), got {}", q.as_f32());
+            "very-low-prob correct prediction should give signal > 0.5 via -ln(p)/7.0, got {}", q.as_f32());
     }
 
     #[test]
