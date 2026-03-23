@@ -29,6 +29,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "lcs" / "induction"))
 app = FastAPI(title="CSRRE Training Dashboard")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+@app.get("/")
+def root():
+    return {
+        "message": "Welcome to the CSRRE Training Dashboard API. The frontend is running on port 3000.",
+        "status": "online",
+        "docs_url": "/docs"
+    }
+
 RUST_BINARY = Path(os.environ.get("RUST_BINARY", "/app/target/release/csrre"))
 
 # ── Adaptive Poisson Controller ───────────────────────────────────────────────
