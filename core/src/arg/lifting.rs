@@ -1,5 +1,5 @@
 //! Modal lifting rules LR(τ→τ'): transform MTLG modal types during context shifts.
-//! Algebraic weight scaling is handled inline; numerica_adapter owns path normalization.
+//! Algebraic weight scaling is handled inline; math_utils owns path normalization.
 
 use std::collections::HashMap;
 use crate::types::{ModalType, ModalMode, TypeCategory, ContextId};
@@ -14,7 +14,7 @@ pub struct ModalLiftingRule {
     pub source_cat:  TypeCategory,
     pub target_mode: ModalMode,
     pub target_cat:  TypeCategory,
-    /// Optional algebraic transformation tag (resolved by numerica_adapter).
+    /// Optional algebraic transformation tag (resolved by math_utils).
     pub algebraic_transform: Option<String>,
 }
 

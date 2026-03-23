@@ -13,7 +13,7 @@ use crate::arg::{
     PassageContext, SlotOccupancyTracker,
     transient_repr::{RepContent, Granularity},
     egraph_adapter::ArgEGraph,
-    graphica_adapter::{GraphicaCache, CachedResult, build_key},
+    memoization::{GraphicaCache, CachedResult, build_key},
     type_normalizer::TypeNormalizer,
 };
 use crate::adaptive::{PerfRegistry, ThresholdRegistry, CausalTransitionRegistry};

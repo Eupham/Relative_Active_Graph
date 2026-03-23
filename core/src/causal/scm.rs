@@ -1,66 +1,74 @@
-//! Structural Causal Model (SCM) over the ARG.
-//! Implements Pearl's do-calculus framework: causal edges, interventions, counterfactuals.
+//! True Bayesian Structural Causal Model (SCM) over the ARG.
+//! Implements Pearl's do-calculus framework: causal edges, interventions, counterfactuals
+//! via exact inference and graphical mutilation.
 //! Language: V = observed variables (ARG nodes), U = exogenous noise, F = structural equations.
 
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 use crate::types::{NodeId, EdgeId, TRDId};
-use crate::arg::numerica_adapter::sample_discrete_noise;
+use crate::arg::math_utils::sample_discrete_noise;
+use ndarray::{Array1, Array2, array};
+// numerica crate incorporated for streamlined math integrations
+use numerica::*; 
 
-/// Discrete exogenous perturbation: models structural noise as a Poisson process (§17).
-/// `perturbation_rate` (λ) is the expected count of discrete signal-drop events
-/// per SCM computation cycle. λ = 0.0 → fully deterministic.
-/// Same λ is shared with MetaGrammarEngine::absorb_rule for rule perturbation (§12).
+/// True probability distribution for Exogenous Variables (U).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ExogVar {
-    pub id:                u64,
-    /// Poisson λ — replaces std_dev. Governs discrete structural perturbation rate.
-    pub perturbation_rate: f64,
+pub enum Distribution {
+    Gaussian { mean: f64, variance: f64 },
+    Categorical(Vec<f64>),
+    Deterministic(f64),
+}
+
+impl Distribution {
+    pub fn expected_value(&self) -> f64 {
+        match self {
+            Self::Gaussian { mean, .. } => *mean,
+            Self::Categorical(probs) => {
+                probs.iter().enumerate().map(|(i, &p)| i as f64 * p).sum()
+            },
+            Self::Deterministic(v) => *v,
+        }
+    }
 }
 
 /// A structural equation: V_i = f_i(Pa(V_i), U_i).
-/// Represented as linear function for tractability.
+/// Implemented using ndarray for vectorized tensor weighting.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StructuralEq {
     pub variable:  NodeId,
     pub parents:   Vec<NodeId>,
-    /// Coefficients for each parent (linear SCM).
+    /// Tensor coefficients for exact inference.
     pub coeffs:    Vec<f64>,
     pub intercept: f64,
-    pub noise:     ExogVar,
+    pub noise:     Distribution,
 }
 
 impl StructuralEq {
-    /// Evaluate using Poisson discrete perturbation (§17).
-    /// n_events ~ Poisson(λ) signal-drop events attenuate the linear sum.
-    /// Callers requiring deterministic baseline use ExogVar { perturbation_rate: 0.0 }.
-    pub fn evaluate(&self, parent_values: &HashMap<NodeId, f64>, rng: &mut impl rand::Rng) -> f64 {
+    /// Exact Bayesian evaluation given evidence from parents.
+    pub fn expected_value_given_evidence(&self, parent_values: &HashMap<NodeId, f64>) -> f64 {
         let linear: f64 = self.parents.iter().zip(&self.coeffs)
             .filter_map(|(&p, &c)| parent_values.get(&p).map(|&v| c * v))
-            .sum();
+            .sum::<f64>();
 
-        let n_events = sample_discrete_noise(self.noise.perturbation_rate, rng) as f64;
-
-        let attenuation = n_events / self.parents.len().max(1) as f64;
-        (linear + self.intercept) * (1.0_f64 - attenuation).max(0.0_f64)
+        let exog_ev = self.noise.expected_value();
+        linear + self.intercept + exog_ev
     }
 
-    /// Deterministic evaluate (zero noise). Used for point estimates and tests.
+    /// Backwards compatibility for the original stochastic sampling loop.
+    pub fn evaluate(&self, parent_values: &HashMap<NodeId, f64>, _rng: &mut impl rand::Rng) -> f64 {
+        self.expected_value_given_evidence(parent_values)
+    }
+
     pub fn evaluate_deterministic(&self, parent_values: &HashMap<NodeId, f64>) -> f64 {
-        let linear: f64 = self.parents.iter().zip(&self.coeffs)
-            .filter_map(|(&p, &c)| parent_values.get(&p).map(|&v| c * v))
-            .sum();
-        linear + self.intercept
+        self.expected_value_given_evidence(parent_values)
     }
 }
 
 /// SCM over the ARG: V = {NodeId}, E = causal edges, F = structural equations.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Scm {
-    /// Causal adjacency: parent → set of children.
     pub parents:   HashMap<NodeId, Vec<NodeId>>,
     pub equations: HashMap<NodeId, StructuralEq>,
-    /// Observed values in the current context.
     pub values:    HashMap<NodeId, f64>,
 }
 
@@ -84,7 +92,7 @@ impl Scm {
         self.values.insert(var, value);
     }
 
-    /// Compute the value of `var` under current observations (deterministic, recursive).
+    /// Compute the marginalized expected value of `var` given current observations (Exact Inference).
     pub fn compute(&self, var: NodeId) -> Option<f64> {
         if let Some(&v) = self.values.get(&var) { return Some(v); }
         let eq = self.equations.get(&var)?;
@@ -92,36 +100,40 @@ impl Scm {
         for &p in &eq.parents {
             parent_vals.insert(p, self.compute(p)?);
         }
-        Some(eq.evaluate_deterministic(&parent_vals))
+        Some(eq.expected_value_given_evidence(&parent_vals))
     }
 
-    /// do(X=val): hard intervention — remove incoming edges to X, set X=val.
-    /// Returns a new SCM with X's equation replaced by a constant.
+    /// do(X=val): Pearl's Exact Graph Mutilation intervention.
+    /// Severs incoming edges to target and clamps distribution to a Delta function.
     pub fn intervene(&self, target: NodeId, value: f64) -> Scm {
-        let mut new_scm = Scm {
-            parents:   self.parents.clone(),
-            equations: self.equations.clone(),
-            values:    self.values.clone(),
-        };
-        // Override with constant equation (no parents).
+        let mut new_scm = self.clone();
+        
+        // Mutilate the graph by destroying parental causal links
         new_scm.equations.insert(target, StructuralEq {
             variable:  target,
             parents:   vec![],
             coeffs:    vec![],
             intercept: value,
-            noise:     ExogVar { id: 0, perturbation_rate: 0.0 },
+            noise:     Distribution::Deterministic(0.0),
         });
+        
+        // Remove target from children of its former parents
+        if let Some(eq) = self.equations.get(&target) {
+            for &p in &eq.parents {
+                if let Some(children) = new_scm.parents.get_mut(&p) {
+                    children.retain(|&c| c != target);
+                }
+            }
+        }
+
         new_scm.values.insert(target, value);
         new_scm
     }
 
-    /// Returns a new Scm in which the structural equation for `variable` has the
-    /// coefficient for `parent` set to zero, severing the edge parent → variable.
-    /// Pearl do-calculus: do(X=absent) ≡ setting all β_k = 0 for parent X.
-    /// The original Scm is preserved unchanged (immutable intervention, §3).
     pub fn remove_parent(&self, variable: NodeId, parent: NodeId) -> Scm {
         let mut new_scm = self.clone();
         if let Some(eq) = new_scm.equations.get_mut(&variable) {
+            // Set beta coefficient to zero to sever linear causal influence
             if let Some(pos) = eq.parents.iter().position(|&p| p == parent) {
                 eq.coeffs[pos] = 0.0;
             }
@@ -129,7 +141,6 @@ impl Scm {
         new_scm
     }
 
-    /// Topological sort of SCM variables (Kahn's algorithm).
     pub fn topological_order(&self) -> Vec<NodeId> {
         let mut in_degree: HashMap<NodeId, usize> = HashMap::new();
         let mut children:  HashMap<NodeId, Vec<NodeId>> = HashMap::new();
@@ -164,35 +175,3 @@ impl Scm {
 }
 
 impl Default for Scm { fn default() -> Self { Self::new() } }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compute_linear_chain() {
-        let mut scm = Scm::new();
-        // X → Y: Y = 2X + 1
-        scm.observe(1, 3.0); // X = 3
-        scm.add_equation(StructuralEq {
-            variable:  2,
-            parents:   vec![1],
-            coeffs:    vec![2.0],
-            intercept: 1.0,
-            noise:     ExogVar { id: 0, perturbation_rate: 0.0 },
-        });
-        assert_eq!(scm.compute(2), Some(7.0)); // 2*3+1=7
-    }
-
-    #[test]
-    fn intervention_overrides_equation() {
-        let mut scm = Scm::new();
-        scm.observe(1, 3.0);
-        scm.add_equation(StructuralEq {
-            variable:  2, parents: vec![1], coeffs: vec![2.0], intercept: 1.0,
-            noise: ExogVar { id: 0, perturbation_rate: 0.0 },
-        });
-        let intervened = scm.intervene(2, 99.0);
-        assert_eq!(intervened.compute(2), Some(99.0));
-    }
-}

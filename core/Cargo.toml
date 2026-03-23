@@ -18,3 +18,5 @@ hashbrown  = { workspace = true }
 fnv        = { workspace = true }
 tokio      = { workspace = true }
 rand_distr = "0.4"
+graphica = "*"
+numerica = "*"

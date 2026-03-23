@@ -16,7 +16,7 @@ impl VocabDistribution {
     ///
     /// Each node contributes its `attribution_score` as the logit.
     /// NodeId is the stable vocabulary index — not a transient edge ID.
-    /// Softmax computation is delegated to numerica_adapter.
+    /// Softmax computation is delegated to math_utils.
     pub fn from_graph(graph: &ArgGraph, active_env: Env) -> Self {
         let active: Vec<(NodeId, f32)> = graph.node_indices()
             .filter(|&ni| {
@@ -34,7 +34,7 @@ impl VocabDistribution {
         }
 
         let logits: Vec<f32> = active.iter().map(|&(_, s)| s).collect();
-        let probs = crate::arg::numerica_adapter::softmax(&logits);
+        let probs = crate::arg::math_utils::softmax(&logits);
 
         Self {
             probs: active.into_iter()

@@ -45,7 +45,7 @@ impl ArgNode {
     pub fn with_label(mut self, env: Env) -> Self { self.atms_label = env; self }
 
     pub fn update_depth(&mut self, path_density: f32, causal_parent_count: usize) {
-        self.depth = crate::arg::numerica_adapter::compute_depth(
+        self.depth = crate::arg::math_utils::compute_depth(
             path_density, self.attribution_score, self.mtlg_type.arity, causal_parent_count,
         );
     }
