@@ -31,8 +31,7 @@ fn mode_to_int(mode: ModalMode) -> u64 {
     match mode {
         ModalMode::Diamond => 1,
         ModalMode::Box     => 2,
-        ModalMode::Star    => 3,
-        ModalMode::Default => 0,
+        ModalMode::Lozenge => 3,
     }
 }
 

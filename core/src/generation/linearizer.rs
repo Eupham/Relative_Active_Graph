@@ -3,7 +3,7 @@
 //! in the target language. Language selected by TRD / query context.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, TRDId, ModalType, ModalMode, TypeCategory, Env};
+use crate::types::{NodeId, EdgeId, TRDId, ModalType, ModalMode, TypeCategory, Env, Direction};
 use crate::arg::{ArgGraph, ArgNode};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::generation::hypothesis::Hypothesis;
