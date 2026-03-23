@@ -37,12 +37,11 @@ class TokenSentence:
         return next((t for t in self.tokens if t.id == tid), None)
 
 
-_SPLIT_RE = re.compile(r"\w+(?:'\w+)*|[^\w\s]", re.UNICODE)
-
-
 def tokenize(text: str, language: str = "en") -> TokenSentence:
-    words  = _SPLIT_RE.findall(text)
-    tokens = [Token(id=i + 1, text=w, lemma=w.lower()) for i, w in enumerate(words)]
+    # Strict character-level induction: the graph must organically learn morphology 
+    # (morphemes/words) via structural co-occurrence, without preconceived regex biases.
+    chars  = list(text)
+    tokens = [Token(id=i + 1, text=c, lemma=c.lower()) for i, c in enumerate(chars)]
     return TokenSentence(tokens=tokens, language=language, text=text)
 
 
