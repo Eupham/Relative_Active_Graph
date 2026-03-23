@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 use crate::types::{NodeId, EdgeId, TRDId};
+use crate::arg::numerica_adapter::sample_discrete_noise;
 
 /// Discrete exogenous perturbation: models structural noise as a Poisson process (§17).
 /// `perturbation_rate` (λ) is the expected count of discrete signal-drop events
@@ -38,12 +39,7 @@ impl StructuralEq {
             .filter_map(|(&p, &c)| parent_values.get(&p).map(|&v| c * v))
             .sum();
 
-        let n_events: f64 = if self.noise.perturbation_rate > 0.0 {
-            rng.sample(rand_distr::Poisson::new(self.noise.perturbation_rate)
-                .expect("valid Poisson parameter"))
-        } else {
-            0.0
-        };
+        let n_events = sample_discrete_noise(self.noise.perturbation_rate, rng) as f64;
 
         let attenuation = n_events / self.parents.len().max(1) as f64;
         (linear + self.intercept) * (1.0_f64 - attenuation).max(0.0_f64)

@@ -99,7 +99,7 @@ impl GraphicaCache {
         next_edge_id:   EdgeId,
     ) -> Option<crate::arg::edge::ArgEdge> {
         use crate::arg::edge::{ArgEdge, EdgeClass};
-        use crate::arg::symbolica_adapter::normalize_path_weight;
+        use crate::arg::numerica_adapter::normalize_path_weight;
         let result = self.store.get_mut(key)?;
         if result.traversal_count < MIN_SHORTCUT_TRAVERSALS { return None; }
         if result.shortcut_canonical_id.is_some() { return None; }

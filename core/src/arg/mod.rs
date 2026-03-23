@@ -1,5 +1,5 @@
 pub mod context_stack;
-pub mod symbolica_adapter;
+pub mod numerica_adapter;
 pub mod edge;
 pub mod egraph_adapter;
 pub mod graphica_adapter;
