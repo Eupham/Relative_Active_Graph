@@ -1,6 +1,5 @@
 //! Modal lifting rules LR(τ→τ'): transform MTLG modal types during context shifts.
-//! Algebraic component (unit conversion, scaling) is handled by symbolica_adapter;
-//! this module handles the type transformation component.
+//! Algebraic weight scaling is handled inline; numerica_adapter owns path normalization.
 
 use std::collections::HashMap;
 use crate::types::{ModalType, ModalMode, TypeCategory, Direction, ContextId};
@@ -15,7 +14,7 @@ pub struct ModalLiftingRule {
     pub source_cat:  TypeCategory,
     pub target_mode: ModalMode,
     pub target_cat:  TypeCategory,
-    /// Optional algebraic transformation tag (resolved by symbolica_adapter).
+    /// Optional algebraic transformation tag (resolved by numerica_adapter).
     pub algebraic_transform: Option<String>,
 }
 
@@ -51,6 +50,11 @@ impl ModalLiftingRule {
         } else {
             None
         }
+    }
+
+    pub fn apply_weight(&self, weight: f32) -> f32 {
+        // `algebraic_transform` tag is reserved for future numerica extensions.
+        weight
     }
 }
 
@@ -93,6 +97,25 @@ impl LiftingRuleRegistry {
         }
         None // No matching rule → TR should be dissolved
     }
+
+    /// Lift a TR and return the algebraic weight scale for the matched rule.
+    /// Used by the engine when shortcut materialization is active.
+    /// Returns Some((new_type, weight_scale)) on match, None if dissolved.
+    pub fn lift_tr_with_weight(
+        &self,
+        tr:       &Tr,
+        from_ctx: ContextId,
+        to_ctx:   ContextId,
+    ) -> Option<(ModalType, f32)> {
+        let rules = self.rules.get(&(from_ctx, to_ctx))
+            .map(|v| v.as_slice()).unwrap_or(&[]);
+        for rule in rules.iter().chain(self.default_rules.iter()) {
+            if let Some(new_type) = rule.apply(tr.mtlg_type) {
+                return Some((new_type, rule.apply_weight(1.0)));
+            }
+        }
+        None
+    }
 }
 
 impl Default for LiftingRuleRegistry {
@@ -106,24 +129,24 @@ mod tests {
     #[test]
     fn rule_applies_matching_type() {
         let rule = ModalLiftingRule::new(
-            1, "scene-to-process",
-            ModalMode::Diamond, TypeCategory::Scene,
-            ModalMode::Diamond, TypeCategory::Process,
+            1, "cat7-to-cat1",
+            ModalMode::Diamond, TypeCategory(7),
+            ModalMode::Diamond, TypeCategory(1),
         );
-        let ty = ModalType::atom(ModalMode::Diamond, TypeCategory::Scene);
+        let ty = ModalType::atom(ModalMode::Diamond, TypeCategory(7));
         let result = rule.apply(ty).unwrap();
-        assert_eq!(result.category, TypeCategory::Process);
+        assert_eq!(result.category, TypeCategory(1));
         assert_eq!(result.mode, ModalMode::Diamond);
     }
 
     #[test]
     fn rule_rejects_non_matching() {
         let rule = ModalLiftingRule::new(
-            1, "scene-to-process",
-            ModalMode::Diamond, TypeCategory::Scene,
-            ModalMode::Diamond, TypeCategory::Process,
+            1, "cat7-to-cat1",
+            ModalMode::Diamond, TypeCategory(7),
+            ModalMode::Diamond, TypeCategory(1),
         );
-        let ty = ModalType::atom(ModalMode::Box, TypeCategory::Scene);
+        let ty = ModalType::atom(ModalMode::Box, TypeCategory(7));
         assert!(rule.apply(ty).is_none());
     }
 }

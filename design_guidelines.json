@@ -1,0 +1,142 @@
+{
+  "design_system": {
+    "name": "Neurosymbolic Mission Control",
+    "theme": "dark",
+    "aesthetic": "sci-fi-technical",
+    "principles": [
+      "Density over decoration",
+      "Data is the hero",
+      "High contrast for readability",
+      "Motion conveys system status"
+    ]
+  },
+  "typography": {
+    "font_family": {
+      "heading": "Rajdhani, sans-serif",
+      "body": "Inter, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "scale": {
+      "h1": "text-4xl font-bold tracking-tight uppercase",
+      "h2": "text-2xl font-semibold tracking-wide uppercase",
+      "h3": "text-xl font-medium tracking-wide text-cyan-400",
+      "body": "text-sm leading-relaxed text-slate-300",
+      "mono": "text-xs font-mono text-cyan-200/80",
+      "label": "text-[10px] font-bold tracking-[0.2em] uppercase text-slate-500"
+    },
+    "imports": [
+      "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Rajdhani:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap"
+    ]
+  },
+  "colors": {
+    "background": {
+      "page": "#050505",
+      "card": "#0A0A0A",
+      "panel": "#0F0F0F",
+      "overlay": "rgba(5, 5, 5, 0.8)"
+    },
+    "border": {
+      "default": "#1F1F1F",
+      "active": "#333333",
+      "highlight": "#00F0FF"
+    },
+    "text": {
+      "primary": "#E2E8F0",
+      "secondary": "#94A3B8",
+      "muted": "#475569",
+      "accent": "#00F0FF"
+    },
+    "brand": {
+      "primary": "#00F0FF",
+      "secondary": "#FF2A6D",
+      "accent": "#39FF14",
+      "warning": "#FFB800"
+    },
+    "charts": {
+      "series_1": "#00F0FF",
+      "series_2": "#FF2A6D",
+      "series_3": "#39FF14",
+      "series_4": "#FFB800",
+      "grid": "#1F1F1F"
+    }
+  },
+  "visual_enhancers": {
+    "borders": {
+      "tech": "border border-white/10 relative",
+      "glow": "border border-cyan-500/50 shadow-[0_0_15px_rgba(0,240,255,0.2)]"
+    },
+    "effects": {
+      "glass": "backdrop-blur-md bg-black/60 border-white/5",
+      "scanline": "bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%]",
+      "noise": "bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20"
+    }
+  },
+  "layout": {
+    "grid_system": "bento-high-density",
+    "spacing": {
+      "container_padding": "p-6",
+      "gap": "gap-4",
+      "section_margin": "mb-8"
+    },
+    "containers": {
+      "dashboard": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 auto-rows-[minmax(180px,auto)] gap-4",
+      "sidebar": "w-64 border-r border-white/10 h-screen sticky top-0 bg-[#080808]",
+      "card": "bg-[#0A0A0A] border border-white/5 p-4 relative overflow-hidden group hover:border-white/10 transition-colors duration-300"
+    }
+  },
+  "components": {
+    "charts": {
+      "library": "recharts",
+      "style": "minimalist-neon",
+      "config": {
+        "cartesian_grid": { "stroke": "#1F1F1F", "strokeDasharray": "3 3" },
+        "tooltip": { 
+          "contentStyle": { "backgroundColor": "#0A0A0A", "borderColor": "#333", "color": "#fff" },
+          "itemStyle": { "color": "#ccc" }
+        },
+        "line": { "strokeWidth": 2, "dot": false, "activeDot": { "r": 6, "strokeWidth": 0 } }
+      }
+    },
+    "terminal": {
+      "style": "font-mono text-xs text-green-400 bg-black p-4 rounded-sm border border-white/10 h-full overflow-y-auto scrollbar-hide",
+      "cursor": "inline-block w-2 h-4 bg-green-400 animate-pulse ml-1"
+    },
+    "buttons": {
+      "primary": "bg-cyan-500/10 text-cyan-400 border border-cyan-500/50 hover:bg-cyan-500/20 hover:shadow-[0_0_15px_rgba(0,240,255,0.3)] transition-all uppercase tracking-widest text-xs font-bold py-2 px-4 clip-path-polygon-[0_0,100%_0,100%_70%,90%_100%,0_100%]",
+      "secondary": "bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10 transition-all uppercase tracking-widest text-xs font-bold py-2 px-4",
+      "destructive": "bg-red-500/10 text-red-400 border border-red-500/50 hover:bg-red-500/20 transition-all uppercase tracking-widest text-xs font-bold py-2 px-4"
+    },
+    "inputs": {
+      "default": "bg-black border border-white/10 text-white placeholder-slate-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/50 transition-all font-mono text-sm py-2 px-3 rounded-none",
+      "number": "font-mono text-right"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "stroke-[1.5px] w-5 h-5"
+  },
+  "animations": {
+    "transition": "transition-all duration-300 ease-out",
+    "keyframes": {
+      "pulse-glow": "animate-[pulse_2s_cubic-bezier(0.4,0,0.6,1)_infinite]"
+    }
+  },
+  "accessibility": {
+    "contrast_check": "Ensure all text meets WCAG AA (4.5:1) against dark backgrounds. Use lighter slate colors (slate-300/200) instead of dark grey.",
+    "focus_states": "All interactive elements must have a visible focus ring (cyan-500)."
+  },
+  "universal_guidelines": [
+    "Use data-testid attributes for all interactive elements.",
+    "Do not use generic gradients; use solid dark colors or subtle noise textures.",
+    "Charts must use Recharts with the defined neon color palette.",
+    "Layouts must be responsive; use grid-cols-1 on mobile.",
+    "Use 'Rajdhani' font for all section headers to maintain the sci-fi aesthetic.",
+    "Implement 'Augmented UI' style (cut corners) using clip-path for key buttons/panels.",
+    "Show 'System Status' indicators (blinking lights) in the header."
+  ],
+  "instructions_to_main_agent": {
+    "setup": "Install required dependencies: lucide-react, recharts, framer-motion, clsx, tailwind-merge.",
+    "structure": "Create a 'components/ui' folder for reusable atoms. Create a 'layouts' folder for the main dashboard shell.",
+    "theme_implementation": "Add the font imports to index.css. Extend tailwind.config.js with the custom colors and fonts defined above."
+  }
+}

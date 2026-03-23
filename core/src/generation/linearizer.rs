@@ -3,10 +3,19 @@
 //! in the target language. Language selected by TRD / query context.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory};
+use crate::types::{NodeId, EdgeId, TRDId, ModalType, ModalMode, TypeCategory, Env};
 use crate::arg::{ArgGraph, ArgNode};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::generation::hypothesis::Hypothesis;
+
+/// One step in a sequential linearization: which node/edge produced which surface token.
+#[derive(Clone, Debug)]
+pub struct LinearizationStep {
+    pub step:     usize,
+    pub surface:  String,
+    pub node_id:  NodeId,
+    pub edge_id:  EdgeId,
+}
 
 /// Per-language lexicon entry.
 #[derive(Clone, Debug)]
@@ -40,17 +49,33 @@ impl PerLanguageLexicon {
             .insert(entry.predicate.clone(), entry);
     }
 
-    /// Look up surface form for `predicate` in `language`.
-    pub fn surface_for(&self, predicate: &str, language: &str) -> Option<&str> {
+    /// Return the full LexEntry for `predicate` in `language`, with fallback to default_lang.
+    pub fn entry_for(&self, predicate: &str, language: &str) -> Option<&LexEntry> {
         self.entries.get(language)
             .and_then(|lex| lex.get(predicate))
-            .map(|e| e.surface.as_str())
             .or_else(|| {
-                // Fallback to default language.
                 self.entries.get(&self.default_lang)
                     .and_then(|lex| lex.get(predicate))
-                    .map(|e| e.surface.as_str())
             })
+    }
+
+    /// Look up surface form for `predicate` in `language`.
+    pub fn surface_for(&self, predicate: &str, language: &str) -> Option<&str> {
+        self.entry_for(predicate, language).map(|e| e.surface.as_str())
+    }
+
+    /// Reverse lookup: find the surface form for a NodeId.
+    ///
+    /// NodeIds in the global lexicon are derived from stable_node_id(predicate),
+    /// so we can re-hash each entry's predicate to find a match.
+    /// This is O(|lexicon|) and intended only as a fallback for abstract nodes.
+    pub fn surface_for_node_id(&self, node_id: NodeId, language: &str) -> Option<&str> {
+        use crate::lcs::stable_node_id;
+        let lex = self.entries.get(language)
+            .or_else(|| self.entries.get(&self.default_lang))?;
+        lex.values().find(|entry| {
+            stable_node_id(&entry.predicate) == node_id
+        }).map(|e| e.surface.as_str())
     }
 }
 
@@ -70,29 +95,29 @@ impl Linearizer {
     }
 
     /// Linearize a hypothesis into a surface string in the target language.
+    /// Always delegates to proposition_to_surface; no mode dispatch.
     pub fn linearize(&self, hyp: &Hypothesis) -> String {
         self.proposition_to_surface(&hyp.proposition)
     }
 
     /// Convert a PropositionGraph to surface form via lexicon lookup.
+    /// ROOT surface first, then args in definition order.
     pub fn proposition_to_surface(&self, prop: &PropositionGraph) -> String {
         let root_surface = self.lexicon
             .surface_for(&prop.root, &self.language)
-            .unwrap_or(&prop.root)
+            .unwrap_or(prop.root.as_str())
             .to_string();
 
         if prop.roles.is_empty() {
             return root_surface;
         }
 
-        // Simple SOV linearization (language-specific word order would be TRD-parameterized).
         let args: Vec<String> = prop.roles.iter()
-            .map(|(role, arg)| {
-                let arg_surface = self.lexicon
+            .map(|(_, arg)| {
+                self.lexicon
                     .surface_for(arg, &self.language)
-                    .unwrap_or(arg)
-                    .to_string();
-                arg_surface
+                    .unwrap_or(arg.as_str())
+                    .to_string()
             })
             .collect();
 
@@ -104,6 +129,24 @@ impl Linearizer {
         let prop = semantics.sentence_level(term);
         self.proposition_to_surface(&prop)
     }
+
+    /// Produce a sequence of `LinearizationStep`s from an ordered list of
+    /// `(node_id, edge_id, predicate)` triples.
+    ///
+    /// Used by the sequential trainer: each step corresponds to one teacher-forced token.
+    pub fn linearize_sequence(
+        &self,
+        steps: &[(NodeId, EdgeId, &str)],
+    ) -> Vec<LinearizationStep> {
+        steps.iter().enumerate().map(|(i, &(nid, eid, pred))| {
+            let surface = self.lexicon
+                .surface_for(pred, &self.language)
+                .unwrap_or(pred)
+                .to_string();
+            LinearizationStep { step: i, surface, node_id: nid, edge_id: eid }
+        }).collect()
+    }
+
 }
 
 #[cfg(test)]

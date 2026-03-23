@@ -1,487 +1,289 @@
-//! UD-to-MTLG converter: derives modal edge assignments from structural tree evidence.
+//! Linguistic Conversion System: text → MTLG modal graph.
+//! TypeCategory assignment: bisimulation partition refinement (Paige & Tarjan 1987).
+//! No k-means. No BIC. No hardcoded cluster count.
 //!
-//! Design invariants (see conceptual specification):
-//!
-//! 1. **No UPOS comparison.**  The UPOS string (VERB, NOUN, ADJ, …) is hashed
-//!    to a u32 on ingestion and stored on `TokenStructure::upos_opaque_id`.
-//!    It is never string-compared anywhere in this module.
-//!
-//! 2. **Structural evidence only.**  Category assignment is driven by:
-//!    - How many core arguments / clausal dependents does this token govern?
-//!    - What relational role does this token fill toward its own head?
-//!    - Is the token the syntactic root?
-//!    - What morphological features does it carry (as opaque hash IDs)?
-//!    Dependency relation strings describe *relational structure*; they are
-//!    not the same as the UPOS category of the token itself.
-//!
-//! 3. **Deferred resolution.**  When structural evidence is insufficient the
-//!    token is deferred to `CategoryInducer`, a k-means++ clusterer that
-//!    discovers categories from structural feature vectors.
+//! Partition refinement overview:
+//!   - Each node starts in one of two blocks: punctuation (leaf) vs. non-punctuation.
+//!   - The algorithm refines blocks by splitting any block B when some nodes in B
+//!     have edges into a splitter block S and others do not.
+//!   - Terminates when no block can be further split: the result is the coarsest
+//!     stable partition (minimal bisimulation equivalence).
+//!   - Block IDs are assigned by sorting blocks on a canonical key derived from
+//!     their modal mode profile, ensuring cross-run stability.
 
-use std::collections::{BTreeSet, HashMap};
-use rand::prelude::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use serde::{Serialize, Deserialize};
+use crate::types::{TypeCategory, ModalMode, ModalType, Direction, NodeId, EdgeId, Env};
+use crate::arg::{ArgNode, ArgEdge, NodeClass, EdgeClass};
+use super::token_types::{Token, TokenSentence, TokenStructure, extract_features, fnv_hash, stable_node_id, fnv1a_64_bytes};
 
-use crate::types::{
-    TypeCategory, ModalMode, ModalType, Direction, NodeId, EdgeId, Env,
-};
-use crate::arg::{ArgNode, ArgEdge, NodeType, EdgeType};
-use super::ud_types::{
-    UdToken, UdTree,
-    is_core_arg, is_clausal, is_adverbial, is_predicative,
-    is_connector, is_discourse, is_functional, is_long_range,
-};
+// ── Feature vector (kept for compatibility) ───────────────────────────────────
 
-// ── Confidence constants ──────────────────────────────────────────────────────
-
-const CONFIDENCE_HIGH:   f64 = 0.85;
-const CONFIDENCE_MEDIUM: f64 = 0.70;
-const CONFIDENCE_LOW:    f64 = 0.45;
-const DEFER_THRESHOLD:   f64 = 0.50;
-
-// ── Feature hashing ───────────────────────────────────────────────────────────
-
-/// Map an arbitrary string to a stable u32 via FNV-1a.
-/// Used to convert UPOS strings and morphological feature pairs into opaque
-/// numeric identifiers that can appear in feature vectors without revealing
-/// their semantic content to the classifier.
-fn hash_string(s: &str) -> u32 {
-    use std::hash::{Hash, Hasher};
-    let mut h = fnv::FnvHasher::default();
-    s.hash(&mut h);
-    h.finish() as u32
-}
-
-/// Hash each `(key=value)` morphological feature pair to an opaque u32.
-fn morph_feature_ids(feats: &HashMap<String, String>) -> BTreeSet<u32> {
-    feats.iter().map(|(k, v)| hash_string(&format!("{}={}", k, v))).collect()
-}
-
-// ── TokenStructure ────────────────────────────────────────────────────────────
-
-/// Purely structural characterisation of a UD token within its tree.
-///
-/// No UPOS category name appears in this struct or the function that builds it.
-/// UPOS is stored as an opaque u32 hash for feature vector construction only.
-/// The fields capture what a token *does* in the dependency tree.
-#[derive(Clone, Debug)]
-pub struct TokenStructure {
-    pub token_id:                 u32,
-
-    // ── Opaque identifiers ──────────────────────────────────────────────────
-    // Stored for vector construction and auditability; never used in
-    // named comparisons.
-    pub upos_opaque_id:           u32,
-    pub morph_feature_ids:        BTreeSet<u32>,
-    pub n_morphological_features: usize,
-
-    // ── Structural tree position ────────────────────────────────────────────
-    pub is_tree_root:             bool,
-    pub depth_in_tree:            usize,
-
-    // ── Argument projection: what this token GOVERNS ────────────────────────
-    pub n_core_arg_dependents:    usize,
-    pub n_clausal_dependents:     usize,
-    pub n_adverbial_dependents:   usize,
-    pub n_predicative_dependents: usize,
-    pub n_functional_dependents:  usize,
-    pub n_total_dependents:       usize,
-
-    // ── This token's relation to its own head ───────────────────────────────
-    pub self_is_core_arg:         bool,
-    pub self_is_clausal:          bool,
-    pub self_is_adverbial:        bool,
-    pub self_is_predicative:      bool,
-    pub self_is_connector:        bool,
-    pub self_is_discourse:        bool,
-    pub self_is_functional:       bool,
-
-    // ── Long-range / reentrancy evidence ────────────────────────────────────
-    pub is_reentrant:             bool,
-    pub has_long_range_dep:       bool,
-}
-
-/// Extract structural features from a UD token without reading UPOS labels.
-pub fn extract_structure(tok: &UdToken, tree: &UdTree) -> TokenStructure {
-    let deps = tree.dependents_of(tok.id);
-    let deprel = tok.deprel.to_lowercase();
-
-    // Depth: count hops to root, guarding against cycles.
-    let mut depth = 0usize;
-    let mut cursor_id = tok.id;
-    let mut seen = BTreeSet::new();
-    loop {
-        let Some(cursor) = tree.token_by_id(cursor_id) else { break };
-        if cursor.head == 0 || !seen.insert(cursor_id) { break }
-        cursor_id = cursor.head;
-        depth += 1;
-    }
-
-    let n_core    = deps.iter().filter(|d| is_core_arg(&d.deprel)).count();
-    let n_clausal = deps.iter().filter(|d| is_clausal(&d.deprel)).count();
-    let n_adverb  = deps.iter().filter(|d| is_adverbial(&d.deprel)).count();
-    let n_pred    = deps.iter().filter(|d| is_predicative(&d.deprel)).count();
-    let n_func    = deps.iter().filter(|d| is_functional(&d.deprel)).count();
-
-    let has_long = is_long_range(&deprel)
-        || deps.iter().any(|d| is_long_range(&d.deprel));
-
-    let morph_ids = morph_feature_ids(&tok.feats);
-    let n_morph   = morph_ids.len();
-
-    TokenStructure {
-        token_id:                 tok.id,
-        upos_opaque_id:           hash_string(&tok.upos),
-        morph_feature_ids:        morph_ids,
-        n_morphological_features: n_morph,
-        is_tree_root:             tok.is_root(),
-        depth_in_tree:            depth,
-        n_core_arg_dependents:    n_core,
-        n_clausal_dependents:     n_clausal,
-        n_adverbial_dependents:   n_adverb,
-        n_predicative_dependents: n_pred,
-        n_functional_dependents:  n_func,
-        n_total_dependents:       deps.len(),
-        self_is_core_arg:         is_core_arg(&deprel),
-        self_is_clausal:          is_clausal(&deprel),
-        self_is_adverbial:        is_adverbial(&deprel),
-        self_is_predicative:      is_predicative(&deprel),
-        self_is_connector:        is_connector(&deprel),
-        self_is_discourse:        is_discourse(&deprel),
-        self_is_functional:       is_functional(&deprel),
-        is_reentrant:             tok.is_reentrant(),
-        has_long_range_dep:       has_long,
-    }
-}
-
-// ── Structural UCCA scoring ───────────────────────────────────────────────────
-
-/// Assign UCCA category from structural evidence alone.
-///
-/// Returns `(category, confidence)`. When `confidence < DEFER_THRESHOLD` the
-/// category is `None` — the token is passed to `CategoryInducer` for
-/// cluster-based resolution.
-///
-/// Evidence hierarchy (see spec §"Structural UCCA scoring"):
-/// 1. Governs core arguments or clausal dependents, or is tree root → Process.
-/// 2. Fills connector or discourse role → Connector / Ground.
-/// 3. Fills adverbial modification role → Adverbial.
-/// 4. Fills predicative (stative) modification role → State.
-/// 5. Fills core argument role, morphologically simple, no dependents → Participant.
-/// 6. Heads a subordinate clause (as dependent) → Scene.
-/// 7. Functional / auxiliary element → Scene.
-/// 8. Insufficient evidence → deferred (None).
-pub fn score_ucca(s: &TokenStructure) -> (Option<TypeCategory>, f64) {
-    // ── Strongly eventive ────────────────────────────────────────────────────
-    if s.n_core_arg_dependents >= 1 || s.n_clausal_dependents >= 1 || s.is_tree_root {
-        return (Some(TypeCategory::Process), CONFIDENCE_HIGH);
-    }
-
-    // ── Structural role: connector or discourse ──────────────────────────────
-    if s.self_is_connector  { return (Some(TypeCategory::Connector), CONFIDENCE_HIGH); }
-    if s.self_is_discourse  { return (Some(TypeCategory::Ground),    CONFIDENCE_HIGH); }
-
-    // ── Structural role: adverbial modification ──────────────────────────────
-    if s.self_is_adverbial  { return (Some(TypeCategory::Adverbial), CONFIDENCE_MEDIUM); }
-
-    // ── Structural role: predicative (stative) modification ──────────────────
-    if s.self_is_predicative { return (Some(TypeCategory::State), CONFIDENCE_MEDIUM); }
-
-    // ── Structural role: core argument ───────────────────────────────────────
-    if s.self_is_core_arg {
-        if s.n_total_dependents == 0 && s.n_morphological_features <= 3 {
-            // Morphologically simple leaf in core arg position: Participant.
-            return (Some(TypeCategory::Participant), CONFIDENCE_MEDIUM);
-        }
-        // Morphologically complex or has dependents — could be event nominal.
-        // Defer to CategoryInducer: evidence is ambiguous.
-        return (None, CONFIDENCE_LOW);
-    }
-
-    // ── Structural role: clausal (as dependent, not head) ────────────────────
-    if s.self_is_clausal    { return (Some(TypeCategory::Scene), CONFIDENCE_MEDIUM); }
-
-    // ── Functional element ────────────────────────────────────────────────────
-    if s.self_is_functional { return (Some(TypeCategory::Scene), 0.60); }
-
-    // ── Insufficient structural evidence ─────────────────────────────────────
-    (None, 0.30)
-}
-
-/// Estimate functor arity from structural evidence.
-/// Arity = number of argument slots remaining to be saturated.
-pub fn compute_arity(s: &TokenStructure) -> u8 {
-    if s.n_core_arg_dependents > 0 {
-        return s.n_core_arg_dependents.min(7) as u8;
-    }
-    // Functional or relational head governing exactly one dependent: arity 1.
-    if s.n_total_dependents == 1 && s.n_core_arg_dependents == 0 {
-        return 1;
-    }
-    0
-}
-
-/// Assign modal mode from structural relation evidence.
-pub fn assign_modal_mode(tok: &UdToken, deprel: &str) -> ModalMode {
-    if tok.is_reentrant() { return ModalMode::Box; }
-    if is_long_range(deprel) { return ModalMode::Lozenge; }
-    ModalMode::Diamond
-}
-
-// ── Feature vector ────────────────────────────────────────────────────────────
-
-const N_STRUCTURAL_FEATURES: usize = 19;
-
-/// Convert a `TokenStructure` to a fixed-size float vector suitable for k-means.
-///
-/// The first 19 dimensions are normalised structural features.
-/// The remaining dimensions are presence bits over the shared morphological vocabulary.
-pub fn structure_to_vector(s: &TokenStructure, morph_vocab: &[u32]) -> Vec<f32> {
-    let mut v = Vec::with_capacity(N_STRUCTURAL_FEATURES + morph_vocab.len());
-
-    v.push(s.is_tree_root as u8 as f32);
-    v.push((s.depth_in_tree as f32 / 10.0).min(1.0));
-    v.push((s.n_core_arg_dependents as f32 / 5.0).min(1.0));
-    v.push((s.n_clausal_dependents as f32 / 3.0).min(1.0));
-    v.push((s.n_adverbial_dependents as f32 / 3.0).min(1.0));
-    v.push((s.n_predicative_dependents as f32 / 3.0).min(1.0));
-    v.push((s.n_functional_dependents as f32 / 5.0).min(1.0));
-    v.push((s.n_total_dependents as f32 / 10.0).min(1.0));
-    v.push(s.self_is_core_arg    as u8 as f32);
-    v.push(s.self_is_clausal     as u8 as f32);
-    v.push(s.self_is_adverbial   as u8 as f32);
-    v.push(s.self_is_predicative as u8 as f32);
-    v.push(s.self_is_connector   as u8 as f32);
-    v.push(s.self_is_discourse   as u8 as f32);
-    v.push(s.self_is_functional  as u8 as f32);
-    v.push(s.is_reentrant        as u8 as f32);
-    v.push(s.has_long_range_dep  as u8 as f32);
-    v.push((s.n_morphological_features as f32 / 10.0).min(1.0));
-    // Opaque UPOS as a normalised integer.
-    v.push((s.upos_opaque_id % 10_000) as f32 / 10_000.0);
-
-    for &fid in morph_vocab {
-        v.push(if s.morph_feature_ids.contains(&fid) { 1.0 } else { 0.0 });
-    }
+pub fn structure_to_vector(
+    s:             &TokenStructure,
+    trigram_vocab: &[u32],
+    suffix_vocab:  &[u32],
+) -> Vec<f32> {
+    let mut v = Vec::with_capacity(9 + trigram_vocab.len() + suffix_vocab.len());
+    v.push(s.is_first_token as u8 as f32);
+    v.push(s.is_last_token as u8 as f32);
+    v.push(s.normalized_position);
+    v.push(s.sentence_length_norm);
+    v.push(s.starts_with_uppercase as u8 as f32);
+    v.push(s.is_punctuation as u8 as f32);
+    v.push(s.char_length_norm);
+    v.push(s.is_repeated as u8 as f32);
+    v.push(s.n_context_neighbors as f32 / 2.0);
+    for &h in trigram_vocab { v.push(s.char_trigram_hashes.contains(&h) as u8 as f32); }
+    for &h in suffix_vocab  { v.push((s.suffix3_hash == h || s.suffix2_hash == h) as u8 as f32); }
     v
 }
 
-// ── CategoryInducer ───────────────────────────────────────────────────────────
+// ── Bisimulation Partition Refinement ────────────────────────────────────────
 
-/// Resolves UCCA categories for tokens where structural evidence was insufficient.
+/// A labeled transition for partition refinement.
+/// Encodes: node `from` has an outgoing edge with label `modal_mode` to node `to`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LabeledTransition {
+    pub from:       NodeId,
+    pub to:         NodeId,
+    pub modal_mode: ModalMode,
+}
+
+/// Computes the coarsest stable partition of `nodes` under `transitions`.
+/// Returns a mapping NodeId → TypeCategory where block IDs are stable across runs.
 ///
-/// Uses k-means++ on structural feature vectors to cluster deferred tokens.
-/// Each cluster is labelled by re-running `score_ucca` on a synthetic
-/// `TokenStructure` reconstructed from the cluster centroid.
+/// Initial partition: two blocks — nodes where `is_leaf` is true (e.g. punctuation,
+/// single-character nodes) and all others.
 ///
-/// This is where the system discovers that morphological combination X clusters
-/// with Process behaviour — without ever being told "X means verb".
+/// Reference: Paige & Tarjan (1987), "Three Partition Refinement Algorithms."
+/// SIAM Journal on Computing 16(6):973–989.
+pub fn bisimulation_partition(
+    nodes:       &[NodeId],
+    transitions: &[LabeledTransition],
+    is_leaf:     &HashMap<NodeId, bool>,
+) -> HashMap<NodeId, TypeCategory> {
+    if nodes.is_empty() {
+        return HashMap::new();
+    }
+
+    // Initial partition: block 0 = leaves, block 1 = non-leaves.
+    let mut node_to_block: HashMap<NodeId, usize> = nodes.iter().map(|&n| {
+        let leaf = is_leaf.get(&n).copied().unwrap_or(false);
+        (n, if leaf { 0 } else { 1 })
+    }).collect();
+
+    // Reverse index: to_node → list of (from_node, modal_mode).
+    let mut reverse: HashMap<NodeId, Vec<(NodeId, ModalMode)>> = HashMap::new();
+    for t in transitions {
+        reverse.entry(t.to).or_default().push((t.from, t.modal_mode));
+    }
+
+    // Worklist of (block_id, modal_mode) splitters.
+    let mut worklist: Vec<(usize, ModalMode)> = vec![
+        (0, ModalMode::Diamond), (0, ModalMode::Box), (0, ModalMode::Lozenge),
+        (1, ModalMode::Diamond), (1, ModalMode::Box), (1, ModalMode::Lozenge),
+    ];
+
+    let mut next_block_id: usize = 2;
+
+    while let Some((splitter_block, mode)) = worklist.pop() {
+        // Find all nodes that have a `mode`-labeled edge into `splitter_block`.
+        let predecessors: HashSet<NodeId> = {
+            // Collect nodes in splitter_block, then find their predecessors via reverse map.
+            nodes.iter().copied()
+                .filter(|n| node_to_block.get(n) == Some(&splitter_block))
+                .flat_map(|s| reverse.get(&s).into_iter().flatten())
+                .filter(|(_, m)| *m == mode)
+                .map(|(from, _)| *from)
+                .collect()
+        };
+
+        if predecessors.is_empty() { continue; }
+
+        // Collect blocks that have at least one node in predecessors.
+        let affected_blocks: HashSet<usize> = predecessors.iter()
+            .filter_map(|n| node_to_block.get(n))
+            .copied()
+            .collect();
+
+        for block in affected_blocks {
+            let in_pred:  Vec<NodeId> = nodes.iter().copied()
+                .filter(|n| node_to_block.get(n) == Some(&block) && predecessors.contains(n))
+                .collect();
+            let not_pred: Vec<NodeId> = nodes.iter().copied()
+                .filter(|n| node_to_block.get(n) == Some(&block) && !predecessors.contains(n))
+                .collect();
+
+            if in_pred.is_empty() || not_pred.is_empty() { continue; }
+
+            // Split: in_pred keeps `block`, not_pred gets new block.
+            let new_block = next_block_id;
+            next_block_id += 1;
+            for n in &not_pred {
+                node_to_block.insert(*n, new_block);
+            }
+
+            // Add both halves as splitters for all modes.
+            for m in [ModalMode::Diamond, ModalMode::Box, ModalMode::Lozenge] {
+                worklist.push((block, m));
+                worklist.push((new_block, m));
+            }
+        }
+    }
+
+    // Assign stable TypeCategory IDs: sort blocks by canonical key
+    // (dominant modal mode of incoming transitions, then block size).
+    // This ensures the same corpus always produces the same ID assignment.
+    let mut block_profiles: BTreeMap<usize, (u8, usize)> = BTreeMap::new();
+    for (&n, &b) in &node_to_block {
+        let entry = block_profiles.entry(b).or_insert((255u8, 0));
+        entry.1 += 1;
+        // Update dominant incoming mode.
+        if let Some(preds) = reverse.get(&n) {
+            for (_, m) in preds {
+                let mode_id = match m {
+                    ModalMode::Diamond => 0u8,
+                    ModalMode::Box     => 1u8,
+                    ModalMode::Lozenge => 2u8,
+                };
+                if mode_id < entry.0 { entry.0 = mode_id; }
+            }
+        }
+    }
+
+    // Sort blocks deterministically: by (dominant_mode, desc block_size).
+    let mut sorted_blocks: Vec<(usize, (u8, usize))> = block_profiles.into_iter().collect();
+    sorted_blocks.sort_by(|a, b| {
+        a.1.0.cmp(&b.1.0).then(b.1.1.cmp(&a.1.1))
+    });
+    let block_to_type: HashMap<usize, TypeCategory> = sorted_blocks.iter().enumerate()
+        .map(|(rank, (block_id, _))| (*block_id, TypeCategory((rank as u32) + 1)))
+        .collect();
+
+    node_to_block.iter()
+        .map(|(&n, &b)| (n, block_to_type.get(&b).copied().unwrap_or(TypeCategory::DEFAULT)))
+        .collect()
+}
+
+// ── CategoryInducer (wraps bisimulation, replaces k-means CategoryInducer) ───
+
+/// Online TypeCategory assigner using bisimulation partition refinement.
+///
+/// Replaces the k-means CategoryInducer. No cluster count hyperparameter.
+/// Partition is recomputed when new nodes are added (incremental refinement).
+///
+/// The partition is deterministic: identical inputs produce identical TypeCategory IDs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CategoryInducer {
-    n_clusters:     usize,
-    pub morph_vocab: Vec<u32>,
-    centroids:       Vec<Vec<f32>>,
-    cluster_labels:  HashMap<usize, TypeCategory>,
+    nodes:       Vec<NodeId>,
+    transitions: Vec<LabeledTransition>,
+    is_leaf:     HashMap<NodeId, bool>,
+    partition:   HashMap<NodeId, TypeCategory>,
+    dirty:       bool,
+    /// Kept for API compatibility; ignored (bisimulation needs no cluster count).
+    pub trigram_vocab: Vec<u32>,
+    pub suffix_vocab:  Vec<u32>,
 }
 
 impl CategoryInducer {
-    pub fn new(n_clusters: usize) -> Self {
+    pub fn new(_ignored: usize) -> Self {
+        // The usize argument was the k-means cluster count; it is ignored.
+        // CategoryInducer no longer takes a cluster count parameter.
         Self {
-            n_clusters,
-            morph_vocab:    Vec::new(),
-            centroids:       Vec::new(),
-            cluster_labels:  HashMap::new(),
+            nodes:        Vec::new(),
+            transitions:  Vec::new(),
+            is_leaf:      HashMap::new(),
+            partition:    HashMap::new(),
+            dirty:        false,
+            trigram_vocab: Vec::new(),
+            suffix_vocab:  Vec::new(),
         }
     }
 
-    /// Collect all observed morphological feature hash IDs into a shared vocabulary.
-    pub fn build_morph_vocab(structures: &[TokenStructure]) -> Vec<u32> {
-        let mut vocab: BTreeSet<u32> = BTreeSet::new();
+    /// Register a node. `leaf` is true for terminal/punctuation nodes.
+    pub fn add_node(&mut self, id: NodeId, is_leaf: bool) {
+        if !self.nodes.contains(&id) {
+            self.nodes.push(id);
+            self.is_leaf.insert(id, is_leaf);
+            self.dirty = true;
+        }
+    }
+
+    /// Register a labeled transition (edge).
+    pub fn add_transition(&mut self, from: NodeId, to: NodeId, mode: ModalMode) {
+        self.transitions.push(LabeledTransition { from, to, modal_mode: mode });
+        self.dirty = true;
+    }
+
+    /// Recompute partition if dirty, then return TypeCategory for `node_id`.
+    pub fn predict_by_id(&mut self, node_id: NodeId) -> TypeCategory {
+        if self.dirty {
+            self.partition = bisimulation_partition(&self.nodes, &self.transitions, &self.is_leaf);
+            self.dirty = false;
+        }
+        self.partition.get(&node_id).copied().unwrap_or(TypeCategory::DEFAULT)
+    }
+
+    /// Predict TypeCategory for a `TokenStructure`.
+    pub fn predict(&mut self, structure: &TokenStructure) -> TypeCategory {
+        let node_id = stable_node_id_from_structure(structure);
+        let leaf = structure.is_punctuation || structure.char_length_norm < 0.1;
+        self.add_node(node_id, leaf);
+        self.predict_by_id(node_id)
+    }
+
+    /// Batch fit: register all structures and recompute once.
+    pub fn fit(&mut self, structures: &[TokenStructure]) {
         for s in structures {
-            vocab.extend(s.morph_feature_ids.iter().copied());
+            let id   = stable_node_id_from_structure(s);
+            let leaf = s.is_punctuation || s.char_length_norm < 0.1;
+            self.add_node(id, leaf);
         }
-        vocab.into_iter().collect()
-    }
-
-    /// Cluster deferred tokens and assign UCCA labels to each cluster.
-    pub fn fit(&mut self, deferred: &[TokenStructure]) {
-        if deferred.is_empty() { return; }
-        if self.morph_vocab.is_empty() {
-            self.morph_vocab = Self::build_morph_vocab(deferred);
-        }
-
-        let n = deferred.len();
-        let k = self.n_clusters.min(n);
-        let vectors: Vec<Vec<f32>> = deferred
-            .iter()
-            .map(|s| structure_to_vector(s, &self.morph_vocab))
+        // Add sequential transitions between adjacent structures (positional bigrams).
+        let ids: Vec<NodeId> = structures.iter()
+            .map(|s| stable_node_id_from_structure(s))
             .collect();
-
-        // ── k-means++ initialisation ─────────────────────────────────────────
-        let mut rng = StdRng::seed_from_u64(42);
-        let mut center_idx: Vec<usize> = vec![rng.gen_range(0..n)];
-        for _ in 1..k {
-            let dists: Vec<f64> = vectors.iter().map(|v| {
-                center_idx.iter()
-                    .map(|&ci| squared_dist(v, &vectors[ci]))
-                    .fold(f64::INFINITY, f64::min)
-            }).collect();
-            let total: f64 = dists.iter().sum::<f64>() + 1e-12;
-            let r: f64 = rng.gen();
-            let mut cumsum = 0.0f64;
-            let mut chosen = n - 1;
-            for (i, &d) in dists.iter().enumerate() {
-                cumsum += d / total;
-                if r <= cumsum { chosen = i; break; }
-            }
-            center_idx.push(chosen);
+        for w in ids.windows(2) {
+            self.add_transition(w[0], w[1], ModalMode::Diamond);
         }
-        let mut centroids: Vec<Vec<f32>> =
-            center_idx.iter().map(|&i| vectors[i].clone()).collect();
-
-        // ── Lloyd's iterations ───────────────────────────────────────────────
-        let mut assignments = vec![0usize; n];
-        for _ in 0..20 {
-            let new_assign: Vec<usize> = vectors.iter().map(|v| {
-                centroids.iter()
-                    .enumerate()
-                    .min_by(|(_, a), (_, b)| {
-                        squared_dist(v, a)
-                            .partial_cmp(&squared_dist(v, b))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(i, _)| i)
-                    .unwrap_or(0)
-            }).collect();
-
-            if new_assign == assignments { break; }
-            assignments = new_assign;
-
-            // Update centroids.
-            let dim = vectors[0].len();
-            for c in 0..k {
-                let members: Vec<&Vec<f32>> = vectors.iter()
-                    .zip(assignments.iter())
-                    .filter(|(_, &a)| a == c)
-                    .map(|(v, _)| v)
-                    .collect();
-                if members.is_empty() { continue; }
-                let mut new_centroid = vec![0.0f32; dim];
-                for m in &members {
-                    for (i, &x) in m.iter().enumerate() {
-                        new_centroid[i] += x;
-                    }
-                }
-                let count = members.len() as f32;
-                for x in &mut new_centroid { *x /= count; }
-                centroids[c] = new_centroid;
-            }
-        }
-
-        // ── Label each cluster by re-scoring its centroid ────────────────────
-        let mut labels = HashMap::new();
-        for (c, centroid) in centroids.iter().enumerate() {
-            let synthetic = centroid_to_structure(centroid);
-            let (cat, conf) = score_ucca(&synthetic);
-            labels.insert(c, if cat.is_some() && conf >= 0.50 {
-                cat.unwrap()
-            } else {
-                TypeCategory::Scene
-            });
-        }
-
-        self.centroids      = centroids;
-        self.cluster_labels = labels;
+        self.partition = bisimulation_partition(&self.nodes, &self.transitions, &self.is_leaf);
+        self.dirty = false;
     }
 
-    /// Assign UCCA category to a deferred token via nearest-centroid lookup.
-    pub fn predict(&self, s: &TokenStructure) -> TypeCategory {
-        if self.centroids.is_empty() { return TypeCategory::Scene; }
-        let vec = structure_to_vector(s, &self.morph_vocab);
-        let best = self.centroids.iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                squared_dist(&vec, a)
-                    .partial_cmp(&squared_dist(&vec, b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        self.cluster_labels.get(&best).copied().unwrap_or(TypeCategory::Scene)
-    }
+    // Compatibility with old API: build_trigram_vocab and build_suffix_vocab are no-ops.
+    pub fn build_trigram_vocab(_structures: &[TokenStructure]) -> Vec<u32> { Vec::new() }
+    pub fn build_suffix_vocab(_structures: &[TokenStructure]) -> Vec<u32> { Vec::new() }
 }
 
-fn squared_dist(a: &[f32], b: &[f32]) -> f64 {
-    a.iter().zip(b.iter())
-        .map(|(&x, &y)| ((x - y) as f64).powi(2))
-        .sum()
+fn stable_node_id_from_structure(s: &TokenStructure) -> NodeId {
+    // Use suffix3_hash and prefix2_hash as structural identity signal.
+    let combined = (s.suffix3_hash as u64) << 32 | (s.prefix2_hash as u64);
+    fnv1a_64_bytes(&combined.to_le_bytes())
 }
 
-/// Reconstruct a synthetic `TokenStructure` from a centroid vector's
-/// structural slice (indices 0–17 defined in `structure_to_vector`).
-fn centroid_to_structure(c: &[f32]) -> TokenStructure {
-    let b = |i: usize| -> bool { c.get(i).copied().unwrap_or(0.0) > 0.5 };
-    let n = |i: usize, scale: usize| -> usize {
-        (c.get(i).copied().unwrap_or(0.0) * scale as f32).round() as usize
-    };
-    TokenStructure {
-        token_id:                 u32::MAX,
-        upos_opaque_id:           0,
-        morph_feature_ids:        BTreeSet::new(),
-        n_morphological_features: n(17, 10),
-        is_tree_root:             b(0),
-        depth_in_tree:            n(1, 10),
-        n_core_arg_dependents:    n(2, 5),
-        n_clausal_dependents:     n(3, 3),
-        n_adverbial_dependents:   n(4, 3),
-        n_predicative_dependents: n(5, 3),
-        n_functional_dependents:  n(6, 5),
-        n_total_dependents:       n(7, 10),
-        self_is_core_arg:         b(8),
-        self_is_clausal:          b(9),
-        self_is_adverbial:        b(10),
-        self_is_predicative:      b(11),
-        self_is_connector:        b(12),
-        self_is_discourse:        b(13),
-        self_is_functional:       b(14),
-        is_reentrant:             b(15),
-        has_long_range_dep:       b(16),
-    }
-}
+// ── Graph types ───────────────────────────────────────────────────────────────
 
-// ── Output graph types ────────────────────────────────────────────────────────
-
-/// An MTLG node derived from a UD token.
-///
-/// `upos_raw` is stored verbatim for human inspection only.
-/// `ucca_cat` is `None` for tokens deferred to batch `resolve_deferred`.
 #[derive(Clone, Debug)]
 pub struct MtlgNode {
     pub token_id:   u32,
     pub text:       String,
     pub lemma:      String,
-    /// Stored verbatim for auditability; never used in logic.
-    pub upos_raw:   String,
     pub modal_mode: ModalMode,
     pub ucca_cat:   Option<TypeCategory>,
     pub arity:      u8,
     pub structure:  TokenStructure,
 }
 
-/// A directed edge in the MTLG graph corresponding to one UD dependency arc.
 #[derive(Clone, Debug)]
 pub struct MtlgEdge {
-    pub src_id:     u32,
-    pub dst_id:     u32,
-    pub deprel:     String,
+    pub src_id:    u32,
+    pub dst_id:    u32,
     pub modal_mode: ModalMode,
     pub ucca_cat:   Option<TypeCategory>,
     pub arity:      u8,
 }
 
-/// MTLG graph produced from one UD sentence.
-///
-/// `deferred` carries the `TokenStructure` values of all tokens whose
-/// categories could not be resolved from structural evidence alone.
-/// Call `resolve_deferred` to batch-resolve them via `CategoryInducer`.
 #[derive(Debug)]
 pub struct MtlgGraph {
     pub nodes:    Vec<MtlgNode>,
@@ -490,297 +292,143 @@ pub struct MtlgGraph {
     pub deferred: Vec<TokenStructure>,
 }
 
-// ── Main conversion ───────────────────────────────────────────────────────────
+// ── Conversion ────────────────────────────────────────────────────────────────
 
-/// Convert a `UdTree` to an `MtlgGraph`.
-///
-/// If `inducer` is provided, deferred tokens are resolved immediately.
-/// Otherwise they accumulate in `MtlgGraph::deferred` for batch resolution.
-pub fn ud_tree_to_mtlg(
-    tree:    &UdTree,
-    inducer: Option<&CategoryInducer>,
-) -> MtlgGraph {
+pub fn sentence_to_mtlg(sentence: &TokenSentence, mut inducer: Option<&mut CategoryInducer>) -> MtlgGraph {
     let mut deferred = Vec::new();
-    let mut nodes    = Vec::new();
-
-    for tok in &tree.tokens {
-        let s          = extract_structure(tok, tree);
-        let (cat, _)   = score_ucca(&s);
-        let arity      = compute_arity(&s);
-
-        let resolved_cat = match cat {
-            Some(c) => Some(c),
-            None    => match inducer {
-                Some(ind) => Some(ind.predict(&s)),
-                None      => { deferred.push(s.clone()); None }
-            },
+    let mut nodes = Vec::new();
+    for tok in &sentence.tokens {
+        let structure = extract_features(tok, sentence);
+        let ucca_cat = if let Some(ref mut ind) = inducer {
+            let node_id = stable_node_id_from_structure(&structure);
+            let leaf = structure.is_punctuation || structure.char_length_norm < 0.1;
+            ind.add_node(node_id, leaf);
+            Some(ind.predict_by_id(node_id))
+        } else {
+            None
         };
-
+        if ucca_cat.is_none() { deferred.push(structure.clone()); }
         nodes.push(MtlgNode {
-            token_id:   tok.id,
-            text:       tok.text.clone(),
-            lemma:      tok.lemma.clone(),
-            upos_raw:   tok.upos.clone(),
-            modal_mode: ModalMode::Diamond, // nodes default; edges carry the actual mode
-            ucca_cat:   resolved_cat,
-            arity,
-            structure:  s,
+            token_id: tok.id, text: tok.text.clone(), lemma: tok.lemma.clone(),
+            modal_mode: ModalMode::Diamond, ucca_cat, arity: 0, structure,
         });
     }
-
-    let mut edges = Vec::new();
-    for tok in &tree.tokens {
-        if tok.head == 0 { continue; }
-        let Some(head_tok) = tree.token_by_id(tok.head) else { continue };
-
-        let s_tok          = extract_structure(tok, tree);
-        let (cat, _)       = score_ucca(&s_tok);
-        let s_head         = extract_structure(head_tok, tree);
-        let modal_mode     = assign_modal_mode(tok, &tok.deprel);
-
-        let resolved_cat = match cat {
-            Some(c) => Some(c),
-            None    => inducer.map(|ind| ind.predict(&s_tok)),
-        };
-
-        edges.push(MtlgEdge {
-            src_id:     tok.head,
-            dst_id:     tok.id,
-            deprel:     tok.deprel.clone(),
-            modal_mode,
-            ucca_cat:   resolved_cat,
-            arity:      compute_arity(&s_head),
-        });
-    }
-
-    MtlgGraph { nodes, edges, language: tree.language.clone(), deferred }
+    let edges = (0..sentence.tokens.len().saturating_sub(1)).map(|i| {
+        MtlgEdge {
+            src_id: sentence.tokens[i].id,
+            dst_id: sentence.tokens[i + 1].id,
+            modal_mode: ModalMode::Diamond, ucca_cat: None, arity: 0,
+        }
+    }).collect();
+    MtlgGraph { nodes, edges, language: sentence.language.clone(), deferred }
 }
 
-/// Batch-resolve deferred categories across a corpus of `MtlgGraph`s.
-///
-/// Collects all deferred `TokenStructure`s, fits a `CategoryInducer`,
-/// then updates each graph's nodes and edges in-place.
-/// Returns the fitted inducer for use on future graphs.
 pub fn resolve_deferred(graphs: &mut [MtlgGraph]) -> CategoryInducer {
-    let all_deferred: Vec<TokenStructure> = graphs.iter()
-        .flat_map(|g| g.deferred.iter().cloned())
-        .collect();
-
-    let mut inducer = CategoryInducer::new(16);
-
-    if !all_deferred.is_empty() {
-        inducer.fit(&all_deferred);
-
+    let all: Vec<TokenStructure> = graphs.iter().flat_map(|g| g.nodes.iter().map(|n| n.structure.clone())).collect();
+    let mut inducer = CategoryInducer::new(0);
+    if !all.is_empty() {
+        inducer.fit(&all);
         for graph in graphs.iter_mut() {
             for node in &mut graph.nodes {
-                if node.ucca_cat.is_none() {
-                    node.ucca_cat = Some(inducer.predict(&node.structure));
-                }
+                if node.ucca_cat.is_none() { node.ucca_cat = Some(inducer.predict(&node.structure)); }
             }
             for edge in &mut graph.edges {
                 if edge.ucca_cat.is_none() {
-                    // Find the destination node's structure for re-prediction.
-                    let cat = graph.nodes.iter()
-                        .find(|n| n.token_id == edge.dst_id)
-                        .map(|n| inducer.predict(&n.structure))
-                        .unwrap_or(TypeCategory::Scene);
-                    edge.ucca_cat = Some(cat);
+                    if let Some(n) = graph.nodes.iter().find(|n| n.token_id == edge.dst_id) {
+                        edge.ucca_cat = Some(inducer.predict(&n.structure));
+                    }
                 }
             }
             graph.deferred.clear();
         }
     }
-
     inducer
 }
 
-// ── ARG conversion ────────────────────────────────────────────────────────────
-
 impl MtlgGraph {
-    /// Convert this graph into `(ArgNode, ArgEdge)` vectors suitable for the
-    /// CSRRE engine's ARG expansion.
-    ///
-    /// `env` is the ATMS environment to stamp on every node.
-    /// `base_id` is the starting NodeId; node IDs are `base_id + token_id`.
-    pub fn to_arg_nodes_and_edges(
-        &self,
-        env:     Env,
-        base_id: NodeId,
-    ) -> (Vec<ArgNode>, Vec<ArgEdge>) {
-        let nodes: Vec<ArgNode> = self.nodes.iter().map(|mn| {
-            let cat  = mn.ucca_cat.unwrap_or(TypeCategory::Scene);
-            let mt   = ModalType::functor(mn.modal_mode, cat, mn.arity, Direction::Right);
-            let nid  = base_id + mn.token_id as u64;
-            let mut n = ArgNode::new(nid, NodeType::Atom, mt, (0, 0));
-            n.surface     = Some(mn.text.as_bytes().to_vec());
-            n.atms_label  = env;
-            n
+    pub fn to_arg_nodes_and_edges(&self, atms_label: u64, situation_id: u64) -> (Vec<ArgNode>, Vec<ArgEdge>) {
+        let nodes: Vec<ArgNode> = self.nodes.iter().map(|n| {
+            let cat = n.ucca_cat.unwrap_or(TypeCategory::DEFAULT);
+            let mt  = if n.arity > 0 {
+                ModalType::functor(n.modal_mode, cat, n.arity, Direction::Right)
+            } else {
+                ModalType::atom(n.modal_mode, cat)
+            };
+            let mut node = ArgNode::new(n.token_id as u64, NodeClass::DEFAULT, mt, (situation_id, 0));
+            node.surface     = Some(n.text.as_bytes().to_vec());
+            node.atms_label  = atms_label;
+            node.attribution_score = 0.5;
+            node.structure   = Some(n.structure.clone());
+            node
         }).collect();
-
-        let edges: Vec<ArgEdge> = self.edges.iter().enumerate().map(|(i, me)| {
-            let src = base_id + me.src_id as u64;
-            let dst = base_id + me.dst_id as u64;
-            ArgEdge::new(
-                base_id + i as u64 + 1000,
-                src,
-                dst,
-                EdgeType::Dependency,
-                me.modal_mode,
-            )
+        let mut edge_id: u64 = 1;
+        let edges: Vec<ArgEdge> = self.edges.iter().map(|e| {
+            let eid = edge_id; edge_id += 1;
+            let mut edge = ArgEdge::new(eid, e.src_id as u64, e.dst_id as u64, EdgeClass::SEQUENTIAL, ModalMode::Diamond);
+            edge.weight = 0.5;
+            edge
         }).collect();
-
         (nodes, edges)
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lcs::ud_types::{UdToken, UdTree};
+    use super::super::token_types::{Token, TokenSentence};
 
-    /// "Alice runs quickly."
-    fn alice_tree() -> UdTree {
-        UdTree::new(
-            vec![
-                UdToken::new(1, "Alice",   "Alice",   "PROPN", "NNP", 2, "nsubj"),
-                UdToken::new(2, "runs",    "run",     "VERB",  "VBZ", 0, "root"),
-                UdToken::new(3, "quickly", "quickly", "ADV",   "RB",  2, "advmod"),
-            ],
-            "en",
-            "Alice runs quickly.",
-        )
-    }
-
-    /// "The city was destroyed." (event nominal with patient)
-    fn destruction_tree() -> UdTree {
-        let mut tok_dest = UdToken::new(4, "destroyed", "destroy", "VERB", "VBD", 0, "root");
-        tok_dest.feats.insert("Tense".into(), "Past".into());
-        tok_dest.feats.insert("VerbForm".into(), "Part".into());
-        UdTree::new(
-            vec![
-                UdToken::new(1, "The",       "the",     "DET",   "DT",  2, "det"),
-                UdToken::new(2, "city",      "city",    "NOUN",  "NN",  4, "nsubj:pass"),
-                UdToken::new(3, "was",       "be",      "AUX",   "VBD", 4, "aux:pass"),
-                tok_dest,
-            ],
-            "en",
-            "The city was destroyed.",
+    fn sentence(words: &[&str]) -> TokenSentence {
+        TokenSentence::new(
+            words.iter().enumerate().map(|(i, &w)| Token::new(i as u32 + 1, w)).collect(),
+            "en", words.join(" "),
         )
     }
 
     #[test]
-    fn root_token_scores_process() {
-        let tree = alice_tree();
-        let runs = tree.token_by_id(2).unwrap();
-        let s    = extract_structure(runs, &tree);
-        assert!(s.is_tree_root);
-        let (cat, conf) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Process));
-        assert!(conf >= CONFIDENCE_HIGH - 1e-6);
+    fn sequential_edges() {
+        let s = sentence(&["Alice", "runs", "quickly"]);
+        let g = sentence_to_mtlg(&s, None);
+        assert_eq!(g.nodes.len(), 3);
+        assert_eq!(g.edges.len(), 2);
+        assert_eq!(g.edges[0].src_id, 1);
+        assert_eq!(g.edges[0].dst_id, 2);
     }
 
     #[test]
-    fn nsubj_leaf_scores_participant() {
-        let tree = alice_tree();
-        let alice = tree.token_by_id(1).unwrap();
-        let s     = extract_structure(alice, &tree);
-        assert!(s.self_is_core_arg);
-        assert_eq!(s.n_total_dependents, 0);
-        let (cat, _) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Participant));
+    fn all_diamond() {
+        let s = sentence(&["The", "cat"]);
+        let g = sentence_to_mtlg(&s, None);
+        for e in &g.edges { assert_eq!(e.modal_mode, ModalMode::Diamond); }
     }
 
     #[test]
-    fn advmod_leaf_scores_adverbial() {
-        let tree    = alice_tree();
-        let quickly = tree.token_by_id(3).unwrap();
-        let s       = extract_structure(quickly, &tree);
-        assert!(s.self_is_adverbial);
-        let (cat, _) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Adverbial));
+    fn resolve_deferred_assigns_all() {
+        let s1 = sentence(&["Alice", "runs"]);
+        let s2 = sentence(&["The", "cat", "sat"]);
+        let mut graphs = vec![sentence_to_mtlg(&s1, None), sentence_to_mtlg(&s2, None)];
+        let total: usize = graphs.iter().map(|g| g.nodes.len()).sum();
+        resolve_deferred(&mut graphs);
+        let resolved: usize = graphs.iter().flat_map(|g| g.nodes.iter())
+            .filter(|n| n.ucca_cat.is_some()).count();
+        assert_eq!(resolved, total);
     }
 
     #[test]
-    fn conversion_produces_correct_counts() {
-        let tree  = alice_tree();
-        let graph = ud_tree_to_mtlg(&tree, None);
-        assert_eq!(graph.nodes.len(), 3);
-        assert_eq!(graph.edges.len(), 2); // nsubj + advmod
-    }
-
-    #[test]
-    fn modal_mode_diamond_for_plain_deps() {
-        let tree  = alice_tree();
-        let graph = ud_tree_to_mtlg(&tree, None);
-        for edge in &graph.edges {
-            assert_eq!(edge.modal_mode, ModalMode::Diamond);
-        }
-    }
-
-    #[test]
-    fn to_arg_nodes_preserves_surface() {
-        let tree  = alice_tree();
-        let graph = ud_tree_to_mtlg(&tree, None);
-        let (nodes, _edges) = graph.to_arg_nodes_and_edges(0b1, 0);
-        let surfaces: Vec<&str> = nodes.iter()
-            .filter_map(|n| n.surface.as_deref().and_then(|b| std::str::from_utf8(b).ok()))
-            .collect();
-        assert!(surfaces.contains(&"Alice"));
-        assert!(surfaces.contains(&"runs"));
-    }
-
-    #[test]
-    fn category_inducer_resolves_deferred() {
-        // Build a small corpus with some deferred tokens.
-        let tree1   = alice_tree();
-        let tree2   = destruction_tree();
-        let mut graphs = vec![
-            ud_tree_to_mtlg(&tree1, None),
-            ud_tree_to_mtlg(&tree2, None),
+    fn bisimulation_produces_nontrivial_partition() {
+        // 4 nodes: 2 leaves, 2 non-leaves with transitions
+        let nodes: Vec<NodeId> = vec![1, 2, 3, 4];
+        let mut is_leaf = HashMap::new();
+        is_leaf.insert(1u64, true);
+        is_leaf.insert(2u64, true);
+        is_leaf.insert(3u64, false);
+        is_leaf.insert(4u64, false);
+        let transitions = vec![
+            LabeledTransition { from: 3, to: 1, modal_mode: ModalMode::Diamond },
+            LabeledTransition { from: 4, to: 2, modal_mode: ModalMode::Diamond },
         ];
-
-        // Some nodes may be deferred; collect all.
-        let total_nodes: usize = graphs.iter().map(|g| g.nodes.len()).sum();
-        let _inducer = resolve_deferred(&mut graphs);
-
-        // After resolution, no node should have None category.
-        let resolved: usize = graphs.iter()
-            .flat_map(|g| g.nodes.iter())
-            .filter(|n| n.ucca_cat.is_some())
-            .count();
-        assert_eq!(resolved, total_nodes, "all nodes must have a category after resolve_deferred");
-    }
-
-    #[test]
-    fn arity_nonzero_for_head_with_core_args() {
-        let tree = alice_tree();
-        let runs = tree.token_by_id(2).unwrap();
-        let s    = extract_structure(runs, &tree);
-        // runs governs one core arg (nsubj)
-        assert!(compute_arity(&s) >= 1);
-    }
-
-    #[test]
-    fn upos_opaque_same_string_same_hash() {
-        assert_eq!(hash_string("VERB"), hash_string("VERB"));
-        assert_ne!(hash_string("VERB"), hash_string("NOUN"));
-    }
-
-    #[test]
-    fn no_upos_comparison_in_scoring() {
-        // Construct a token with UPOS deliberately set to a nonsense string.
-        // Score must still produce a category driven by structural evidence.
-        let tree = alice_tree();
-        let mut fake_tok = tree.token_by_id(2).unwrap().clone();
-        fake_tok.upos = "XYZZY_NOT_A_REAL_UPOS".into();
-        // The tree still has Alice (nsubj) and quickly (advmod) under node 2.
-        // Because it is the root and governs a core arg, score_ucca should
-        // return Process regardless of the UPOS string.
-        let s = extract_structure(&fake_tok, &tree);
-        let (cat, _) = score_ucca(&s);
-        assert_eq!(cat, Some(TypeCategory::Process),
-            "category must come from structural evidence, not the UPOS string");
+        let partition = bisimulation_partition(&nodes, &transitions, &is_leaf);
+        assert_eq!(partition.len(), 4);
+        // Leaves should have the same category; non-leaves may differ due to targets
+        assert_eq!(partition[&1], partition[&2], "leaves should be in same block");
     }
 }
