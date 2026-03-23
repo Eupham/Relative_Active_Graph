@@ -62,38 +62,60 @@ fn types_consistent(a: ModalType, b: ModalType) -> bool {
     a.mode == b.mode && a.category == b.category
 }
 
-/// Calculates the incidence matrix representation of the \delta^0 coboundary operator,
-/// and returns the rank of the image to compute H^1 dimension.
-fn compute_h1_betti(graph: &ArgGraph) -> usize {
-    let edge_count = graph.edge_count();
-    let node_count = graph.node_count();
-    
-    // Euler characteristic implies \chi = V - E
-    // For 1D complex, \chi = b_0 - b_1, so b_1 = E - V + b_0
-    // We compute b_0 (connected components) via BFS since StableGraph
-    // does not implement NodeCompactIndexable required by connected_components:
-    let b0 = {
-        let mut visited: HashSet<NodeIndex> = HashSet::new();
-        let mut components = 0usize;
-        for start in graph.node_indices() {
-            if visited.contains(&start) { continue; }
-            components += 1;
-            let mut queue = VecDeque::new();
-            queue.push_back(start);
-            visited.insert(start);
-            while let Some(n) = queue.pop_front() {
-                for nb in graph.neighbors_undirected(n) {
-                    if visited.insert(nb) { queue.push_back(nb); }
-                }
+fn matrix_rank(a: &mut Array2<f64>) -> usize {
+    let (m, n) = (a.nrows(), a.ncols());
+    let mut rank = 0;
+    let mut row = 0;
+    for col in 0..n {
+        if row >= m { break; }
+        let mut pivot_row = row;
+        for r in (row + 1)..m {
+            if a[[r, col]].abs() > a[[pivot_row, col]].abs() { pivot_row = r; }
+        }
+        if a[[pivot_row, col]].abs() < 1e-9 { continue; }
+        
+        if pivot_row != row {
+            for c in 0..n { a.swap((row, c), (pivot_row, c)); }
+        }
+        
+        for r in (row + 1)..m {
+            let factor = a[[r, col]] / a[[row, col]];
+            for c in col..n {
+                let val = a[[row, c]];
+                a[[r, c]] -= factor * val;
             }
         }
-        components
-    };
+        row += 1;
+        rank += 1;
+    }
+    rank
+}
+
+/// Calculates the exact algebraic incidence matrix representation of the \delta^0 
+/// coboundary operator, and computes the rank via Gaussian Elimination to derive 
+/// the true H^1 dimension.
+fn compute_h1_betti(graph: &ArgGraph) -> usize {
+    let num_edges = graph.edge_count();
+    let num_nodes = graph.node_count();
     
-    // H^1 dimension (b_1) counts the fundamental cycles / obstructions
-    let b1 = edge_count as isize - node_count as isize + b0 as isize;
+    if num_edges == 0 || num_nodes == 0 { return 0; }
+
+    let mut delta_0 = Array2::<f64>::zeros((num_edges, num_nodes));
     
-    if b1 > 0 { b1 as usize } else { 0 }
+    let node_indices: Vec<_> = graph.node_indices().collect();
+    for (e_idx, edge) in graph.edge_indices().enumerate() {
+        let (u, v) = graph.edge_endpoints(edge).unwrap();
+        let u_pos = node_indices.iter().position(|&n| n == u).unwrap();
+        let v_pos = node_indices.iter().position(|&n| n == v).unwrap();
+        
+        // Standard graph 1D simplicial coboundary orientation
+        delta_0[[e_idx, u_pos]] = -1.0;
+        delta_0[[e_idx, v_pos]] =  1.0;
+    }
+    
+    let rank = matrix_rank(&mut delta_0);
+    
+    num_edges.saturating_sub(rank)
 }
 
 pub fn check_sheaf_coherence(

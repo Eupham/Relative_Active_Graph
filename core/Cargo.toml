@@ -18,5 +18,5 @@ hashbrown  = { workspace = true }
 fnv        = { workspace = true }
 tokio      = { workspace = true }
 rand_distr = "0.4"
-graphica = "*"
-numerica = "*"
+graphica = { git = "https://github.com/symbolica-dev/graphica" }
+numerica = { git = "https://github.com/symbolica-dev/numerica" }

@@ -29,6 +29,14 @@ impl Distribution {
             Self::Deterministic(v) => *v,
         }
     }
+
+    pub fn variance(&self) -> f64 {
+        match self {
+            Self::Gaussian { variance, .. } => *variance,
+            Self::Categorical(_) => 1.0, // Baseline categorical variance
+            Self::Deterministic(_) => 0.0,
+        }
+    }
 }
 
 /// A structural equation: V_i = f_i(Pa(V_i), U_i).
@@ -44,17 +52,25 @@ pub struct StructuralEq {
 }
 
 impl StructuralEq {
-    /// Exact Bayesian evaluation given evidence from parents.
-    pub fn expected_value_given_evidence(&self, parent_values: &HashMap<NodeId, f64>) -> f64 {
-        let linear: f64 = self.parents.iter().zip(&self.coeffs)
-            .filter_map(|(&p, &c)| parent_values.get(&p).map(|&v| c * v))
-            .sum::<f64>();
-
-        let exog_ev = self.noise.expected_value();
-        linear + self.intercept + exog_ev
+    /// Exact Bayesian inference propagating full Gaussian messages (mean, variance).
+    pub fn expected_distribution_given_evidence(&self, parent_dists: &HashMap<NodeId, (f64, f64)>) -> (f64, f64) {
+        let mut mean_sum = self.intercept + self.noise.expected_value();
+        let mut var_sum  = self.noise.variance();
+        
+        for (&p, &c) in self.parents.iter().zip(&self.coeffs) {
+            if let Some(&(p_mean, p_var)) = parent_dists.get(&p) {
+                mean_sum += c * p_mean;
+                var_sum  += c * c * p_var;
+            }
+        }
+        (mean_sum, var_sum)
     }
 
-    /// Backwards compatibility for the original stochastic sampling loop.
+    pub fn expected_value_given_evidence(&self, parent_values: &HashMap<NodeId, f64>) -> f64 {
+        let map = parent_values.iter().map(|(&k, &v)| (k, (v, 0.0))).collect();
+        self.expected_distribution_given_evidence(&map).0
+    }
+
     pub fn evaluate(&self, parent_values: &HashMap<NodeId, f64>, _rng: &mut impl rand::Rng) -> f64 {
         self.expected_value_given_evidence(parent_values)
     }
@@ -70,6 +86,7 @@ pub struct Scm {
     pub parents:   HashMap<NodeId, Vec<NodeId>>,
     pub equations: HashMap<NodeId, StructuralEq>,
     pub values:    HashMap<NodeId, f64>,
+    pub distributions: HashMap<NodeId, (f64, f64)>,
 }
 
 impl Scm {
@@ -78,6 +95,7 @@ impl Scm {
             parents:   HashMap::new(),
             equations: HashMap::new(),
             values:    HashMap::new(),
+            distributions: HashMap::new(),
         }
     }
 
@@ -90,17 +108,23 @@ impl Scm {
 
     pub fn observe(&mut self, var: NodeId, value: f64) {
         self.values.insert(var, value);
+        self.distributions.insert(var, (value, 0.0));
     }
 
-    /// Compute the marginalized expected value of `var` given current observations (Exact Inference).
-    pub fn compute(&self, var: NodeId) -> Option<f64> {
-        if let Some(&v) = self.values.get(&var) { return Some(v); }
+    /// Compute exact inference producing joint Gaussian marginals (Mean, Variance).
+    pub fn compute_distribution(&self, var: NodeId) -> Option<(f64, f64)> {
+        if let Some(&d) = self.distributions.get(&var) { return Some(d); }
+        if let Some(&v) = self.values.get(&var) { return Some((v, 0.0)); }
         let eq = self.equations.get(&var)?;
-        let mut parent_vals = HashMap::new();
+        let mut parent_dists = HashMap::new();
         for &p in &eq.parents {
-            parent_vals.insert(p, self.compute(p)?);
+            parent_dists.insert(p, self.compute_distribution(p)?);
         }
-        Some(eq.expected_value_given_evidence(&parent_vals))
+        Some(eq.expected_distribution_given_evidence(&parent_dists))
+    }
+
+    pub fn compute(&self, var: NodeId) -> Option<f64> {
+        self.compute_distribution(var).map(|(mean, _)| mean)
     }
 
     /// do(X=val): Pearl's Exact Graph Mutilation intervention.
