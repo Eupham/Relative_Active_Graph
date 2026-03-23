@@ -266,7 +266,7 @@ impl Engine {
         }
     }
 
-    fn post_execution_common(&mut self, graph: &ArgGraph, trd: Option<TRDId>, quality: Quality) {
+    fn post_execution_common(&mut self, graph: &mut ArgGraph, trd: Option<TRDId>, quality: Quality) {
         // Slot occupancy for synonym discovery
         for idx in graph.node_indices() {
             let n = &graph[idx];
@@ -283,8 +283,7 @@ impl Engine {
         self.thresholds.sync(&self.perf);
         // Periodic weight decay
         if self.tr_counter % 50 == 0 {
-            let mut g = graph.clone();
-            apply_weight_decay(&mut g, 0.001);
+            apply_weight_decay(graph, 0.001);
         }
         // Periodic synonym edges (operates on last_graph)
         if self.tr_counter % 100 == 0 {
@@ -375,8 +374,8 @@ impl Engine {
         // Attribution — route through AttributionEngine + Counterfactual
         let attributed_edges: Vec<EdgeId> = search.graph.edge_indices()
             .map(|ei| search.graph[ei].id).collect();
-        for &eid in &attributed_edges {
-            self.apply_attribution_batch(vec![eid], quality, trd.unwrap_or(0));
+        if !attributed_edges.is_empty() {
+            self.apply_attribution_batch(attributed_edges.clone(), quality, trd.unwrap_or(0));
         }
         if !decoded_ids.is_empty() {
             propagate_attribution_backward(&mut search.graph, &self.atms, &decoded_ids, quality, 4, 0.7);
@@ -408,7 +407,7 @@ impl Engine {
             for tr in &dissolved_trs { self.ruler.observe_dissolved_tr(tr, success); }
         }
 
-        self.post_execution_common(&search.graph, trd, quality);
+        self.post_execution_common(&mut search.graph, trd, quality);
 
         self.merge_into_global(&search.graph);
         self.last_graph      = Some(search.graph);
@@ -519,9 +518,13 @@ impl Engine {
         let mut updated_nodes: Vec<NodeId> = Vec::new();
         let attributed_edges: Vec<EdgeId> = passage.signal.edge_signals.keys().copied().collect();
 
+        if !attributed_edges.is_empty() {
+            let mean_q = Quality::new(passage.signal.edge_signals.values().sum::<f32>() / token_count / attributed_edges.len().max(1) as f32);
+            self.apply_attribution_batch(attributed_edges.clone(), mean_q, trd);
+        }
+
         for (&edge_id, &signal) in &passage.signal.edge_signals {
             let q = Quality::new(signal / token_count);
-            self.apply_attribution_batch(vec![edge_id], q, trd);
             apply_attribution(&mut final_graph, edge_id, 1.0, q);
             if let Some(ei) = final_graph.edge_indices().find(|&i| final_graph[i].id == edge_id) {
                 updated_nodes.push(final_graph[ei].dst);
@@ -558,10 +561,7 @@ impl Engine {
             for tr in &dissolved_trs { self.ruler.observe_dissolved_tr(tr, success); }
         }
 
-        self.post_execution_common(&final_graph, Some(trd), final_quality);
-
-        if self.tr_counter % 50 == 0 { apply_weight_decay(&mut final_graph, 0.001); }
-        if self.tr_counter % 100 == 0 { self.slot_tracker.materialise_synonym_edges(&mut final_graph, 3); }
+        self.post_execution_common(&mut final_graph, Some(trd), final_quality);
 
         self.merge_into_global(&final_graph);
         self.last_graph = Some(final_graph);

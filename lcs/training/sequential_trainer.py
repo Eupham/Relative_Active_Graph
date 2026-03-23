@@ -102,7 +102,7 @@ class SequentialTrainer:
                     if self._inducer is not None:
                         entry = self._inducer.best_type(s.lemma)
                         if entry is not None:
-                            cat_id = UCCA_TO_INT.get(entry.ucca_cat, 0)
+                            cat_id = int(entry.ucca_cat.split("_")[-1]) if entry.ucca_cat.startswith("cluster_") else UCCA_TO_INT.get(entry.ucca_cat, 0)
                     nodes.append(bridge.make_node(
                         node_id=_stable_node_id(s.lemma),
                         surface=s.text,
