@@ -23,3 +23,13 @@ ndarray       = "0.15"
 rand          = "0.8"
 hashbrown     = "0.14"
 fnv           = "1"
+
+# Fast dev-build profile: skip optimisation to cut compile times
+[profile.dev]
+opt-level = 0
+debug = true
+
+# Optimise dependencies even in dev builds (they rarely change and this
+# dramatically speeds up runtime without re-compiling your own crates)
+[profile.dev.package."*"]
+opt-level = 2
