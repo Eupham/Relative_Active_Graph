@@ -9,33 +9,25 @@ causal SCMs, and Variance-Adaptive Thresholds (VAT).
 
 ---
 
-## C4 Training — Colab Notebook
+## App Launcher — Notebook
 
-Train the MTLG lexicon and TRD bootstrapper on a streaming subset of the
-[C4 corpus](https://huggingface.co/datasets/allenai/c4) (HuggingFace), run the
-integration test suite, then launch the interactive **Streamlit UI** via a public
-ngrok URL — no GPU required, ~5 min on a free Colab CPU.
+`Launch.ipynb` starts the **full application stack in one go**: FastAPI backend,
+React dashboard, and Streamlit UI (fallback when npm is unavailable).
 
-The notebook **clones this repository directly** so it always runs against the
-current codebase — no inline source copies.
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eupham/Relative_Active_Graph/blob/master/Launch.ipynb)
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eupham/Relative_Active_Graph/blob/master/RAG_C4_Training.ipynb)
-
-### What the notebook covers
+### What the launcher does
 
 | Step | Description |
 |------|-------------|
-| 1 | **Clone repo from GitHub** — source modules loaded from the live codebase |
-| 2 | Install dependencies (`datasets`, `leidenalg`, `python-igraph`, `numpy`, `scipy`, `networkx`, `streamlit`, `pyngrok`, …) |
-| 3 | Add repo modules to path |
-| 4 | Configure demo parameters (`TRAIN_SAMPLES`, `HELD_OUT`) |
-| 5–8 | **Stream C4** → boundary induction → MTLG graphs → induce lexicon → bootstrap TRDs (SBM Leiden MDL) → evaluate held-out |
-| 9 | **Integration test suite** — 5 canonical sentences verified end-to-end (parse, lexicon, TRD) |
-| 10 | Visualise modal mode and UCCA category distributions |
-| 11 | **Inference demo** — analyse new sentences with the trained model |
-| 12 | Render MTLG dependency graphs (UCCA-coloured, mode-styled edges) |
-| 13 | Download trained artefacts (`en_lexicon.json`, `en_trds.json`) |
-| 14 | **Launch Streamlit UI** — interactive Train & Inference tabs via public ngrok URL |
+| 1 | Clone repo from GitHub (Colab only — skipped when already present) |
+| 2 | Install Python deps (`lcs/requirements.txt`, `fastapi`, `uvicorn`, `pyngrok`) |
+| 3 | Build Rust engine via `cargo build --release` (skipped if binary exists or cargo unavailable) |
+| 4 | Install React frontend deps (`npm install`) |
+| 5 | Start FastAPI backend on port 8000, React dashboard on port 3000 (or Streamlit on 8501) |
+| 6 | **Colab**: expose services via ngrok and print public URLs — **Local**: print `localhost` URLs |
+
+A final optional cell shuts everything down cleanly.
 
 ---
 
@@ -76,7 +68,7 @@ python test_e2e_english.py
 
 ```
 Relative_Active_Graph/
-├── RAG_C4_Training.ipynb          # Colab notebook — clones repo, trains, tests, launches UI
+├── Launch.ipynb                   # One-click launcher — installs deps, builds Rust, starts full stack
 ├── app.py                         # Streamlit web UI (Train + Inference & Visualization)
 ├── test_e2e_english.py            # End-to-end English pipeline test (Rust + Python)
 ├── test_summary.md                # Test execution results
