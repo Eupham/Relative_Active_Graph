@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 TARGET_PASSAGE_CHARS = 2000
 _MODE_TO_TRD = {"diamond": 0, "box": 1, "lozenge": 2}
+# UCCA_TO_INT is retained only as a fallback for non-MtlgInducer paths.
+# MtlgInducer produces "cluster_N" labels; use the numeric parse in flush_passage.
 UCCA_TO_INT  = {"Scene": 0, "Process": 1, "Connector": 2, "Ground": 3,
                 "Adverbial": 4, "State": 5, "Participant": 6}
 
@@ -105,13 +107,20 @@ class SequentialTrainer:
                     if self._inducer is not None:
                         entry = self._inducer.best_type(s.lemma)
                         if entry is not None:
-                            cat_id = UCCA_TO_INT.get(entry.ucca_cat, 0)
+                            label = entry.ucca_cat
+                            if label.startswith("cluster_"):
+                                try:
+                                    cat_id = int(label[8:])  # len("cluster_") == 8
+                                except ValueError:
+                                    cat_id = 0
+                            else:
+                                cat_id = UCCA_TO_INT.get(label, 0)
                     nodes.append(bridge.make_node(
                         node_id=_stable_node_id(s.lemma),
                         surface=s.text,
                         score=0.5,
-                        deprel_hash=s.suffix3_hash,
-                        upos_hash=s.prefix2_hash,
+                        suffix3_hash=s.suffix3_hash,
+                        prefix2_hash=s.prefix2_hash,
                         arity=0,
                         mode="diamond",
                         cat=cat_id,

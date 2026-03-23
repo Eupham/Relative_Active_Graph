@@ -13,7 +13,7 @@ use crate::arg::{
     PassageContext, SlotOccupancyTracker,
     transient_repr::{RepContent, Granularity},
     egraph_adapter::ArgEGraph,
-    graphica_adapter::{GraphicaCache, build_key},
+    graphica_adapter::{GraphicaCache, CachedResult, build_key},
     type_normalizer::TypeNormalizer,
 };
 use crate::adaptive::{PerfRegistry, ThresholdRegistry, CausalTransitionRegistry};
@@ -290,17 +290,6 @@ impl Engine {
         // VDBE threshold sync
         if let Some(d) = trd { self.perf.update(d, quality); }
         self.thresholds.sync(&self.perf);
-        // Periodic weight decay
-        if self.tr_counter % 50 == 0 {
-            let mut g = graph.clone();
-            apply_weight_decay(&mut g, 0.001);
-        }
-        // Periodic synonym edges (operates on last_graph)
-        if self.tr_counter % 100 == 0 {
-            if let Some(ref mut g) = self.last_graph {
-                self.slot_tracker.materialise_synonym_edges(g, 3);
-            }
-        }
     }
 
     // ── Full execution cycle (inference + continuous learning) ────────────────
@@ -347,7 +336,15 @@ impl Engine {
         let nodes_ref: Vec<_> = search.graph.node_indices().map(|i| &search.graph[i]).collect();
         let edges_ref: Vec<_> = search.graph.edge_indices().map(|i| &search.graph[i]).collect();
         let cache_key = build_key(&nodes_ref, &edges_ref, active_env);
-        if self.graphica.get(&cache_key).is_none() { self.egraph.saturate(); }
+        if self.graphica.get(&cache_key).is_none() {
+            self.egraph.saturate();
+            self.graphica.insert(CachedResult {
+                key: cache_key, edge_deltas: HashMap::new(),
+                quality: 0.0, traversal_count: 0, shortcut_canonical_id: None,
+            });
+        } else {
+            self.graphica.record_traversal(&cache_key);
+        }
 
         // Apply Ruler type normalizations
         let normalizer = TypeNormalizer::new(self.ruler.rules.clone());
@@ -379,6 +376,9 @@ impl Engine {
         let quality = if dr.satisfied {
             if dr.depth_used == 0 { Quality::GOOD } else { Quality::PARTIAL }
         } else { Quality::BAD };
+
+        // Update cached quality with EMA blend
+        self.graphica.update_quality(&cache_key, quality.as_f32());
 
         // Attribution — route through AttributionEngine + Counterfactual
         let attributed_edges: Vec<EdgeId> = search.graph.edge_indices()
@@ -420,6 +420,9 @@ impl Engine {
         }
 
         self.post_execution_common(&search.graph, trd, quality);
+
+        if self.tr_counter % 50 == 0 { apply_weight_decay(&mut search.graph, 0.001); }
+        if self.tr_counter % 100 == 0 { self.slot_tracker.materialise_synonym_edges(&mut search.graph, 3); }
 
         self.merge_into_global(&search.graph);
         self.last_graph      = Some(search.graph);
@@ -658,7 +661,7 @@ impl Engine {
     }
 
     pub fn apply_attribution_batch(&mut self, edge_ids: Vec<EdgeId>, quality: Quality, trd_id: TRDId) -> Vec<EdgeId> {
-        self.tr_counter += 1;
+        // tr_counter is managed by the outer execution cycle; all per-edge records share the same TR stamp.
         let tr_id = self.tr_counter;
         self.attribution.record(tr_id, trd_id, quality, &edge_ids);
         self.counterfactual.record_dissolved_tr(tr_id, trd_id, quality, edge_ids.clone());

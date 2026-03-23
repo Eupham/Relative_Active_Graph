@@ -42,14 +42,15 @@ struct WireQuery {
 
 #[derive(Deserialize, Clone)]
 struct WireNode {
-    id:          u64,
-    surface:     Option<String>,
-    score:       f32,
-    mode:        Option<String>,
-    cat:         Option<u32>,
-    arity:       Option<u8>,
-    deprel_hash: Option<u64>,
-    upos_hash:   Option<u64>,
+    id:           u64,
+    surface:      Option<String>,
+    score:        f32,
+    mode:         Option<String>,
+    cat:          Option<u32>,
+    arity:        Option<u8>,
+    suffix3_hash: Option<u64>,
+    prefix2_hash: Option<u64>,
+    suffix2_hash: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -140,9 +141,9 @@ fn wire_node_to_arg(w: WireNode) -> ArgNode {
         char_length_norm:      w.surface.as_deref()
             .map(|s| (s.len() as f32 / 15.0).min(1.0))
             .unwrap_or(0.3),
-        prefix2_hash:          0,
-        suffix3_hash:          w.upos_hash.unwrap_or(0) as u32,
-        suffix2_hash:          w.deprel_hash.unwrap_or(0) as u32,
+        prefix2_hash:          w.prefix2_hash.unwrap_or(0) as u32,
+        suffix3_hash:          w.suffix3_hash.unwrap_or(0) as u32,
+        suffix2_hash:          w.suffix2_hash.unwrap_or(0) as u32,
         prev_lemma_hash:       0,
         next_lemma_hash:       0,
         n_context_neighbors:   0,

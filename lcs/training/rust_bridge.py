@@ -119,11 +119,11 @@ class RustBridge:
             return {}
 
     def make_node(self, node_id: int, surface: str, score: float = 0.5,
-                  deprel_hash: int = 0, upos_hash: int = 0, arity: int = 0,
-                  mode: str = "diamond", cat: int = 0) -> dict:
+                  suffix3_hash: int = 0, prefix2_hash: int = 0, suffix2_hash: int = 0,
+                  arity: int = 0, mode: str = "diamond", cat: int = 0) -> dict:
         return {"id": node_id, "surface": surface, "score": score,
-                "deprel_hash": deprel_hash, "upos_hash": upos_hash,
-                "arity": arity, "mode": mode, "cat": cat}
+                "suffix3_hash": suffix3_hash, "prefix2_hash": prefix2_hash,
+                "suffix2_hash": suffix2_hash, "arity": arity, "mode": mode, "cat": cat}
 
     def make_edge(self, edge_id: int, src: int, dst: int,
                   mode: str = "diamond", weight: float = 1.0) -> dict:
