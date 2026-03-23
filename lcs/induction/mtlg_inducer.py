@@ -1,172 +1,76 @@
-"""Probabilistic MTLG grammar induction.
-
-Extends Kwiatkowski et al. (2010) higher-order unification to multimodal types.
-Bisk & Hockenmaier HDP-CCG extended to modal categories (◇, □, ◊).
-
-Pipeline:
-  UD tree → MTLG graph → extract (word, modal_type) pairs → update lexicon counts → normalize.
-
-Output: per-language modal lexicon stored as JSON.
-  {"lemma": {"modal_mode": "diamond", "ucca_cat": "Process", "arity": 2, "count": 145}, ...}
-"""
+"""MLE-based lexicon induction from tokenised text. No UD field references."""
 from __future__ import annotations
-
-import json
-import logging
-import math
+import json, logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class LexTypeEntry:
-    modal_mode:  str
-    category_id: int   # TypeCategory numeric ID (0=DEFAULT, 1-6 structural prototypes)
-    arity:       int
-    count:       int = 0
-    log_prob:    float = 0.0
-
-
-@dataclass
-class PerLanguageLexicon:
-    language: str
-    entries:  dict[str, list[LexTypeEntry]] = field(default_factory=lambda: defaultdict(list))
-
-    def update(self, lemma: str, mode: str, category_id: int, arity: int, weight: float = 1.0):
-        for entry in self.entries[lemma]:
-            if entry.modal_mode == mode and entry.category_id == category_id and entry.arity == arity:
-                entry.count += weight
-                return
-        self.entries[lemma].append(LexTypeEntry(mode, category_id, arity, count=weight))
-
-    def normalize(self):
-        """Compute log-probabilities from counts (MLE)."""
-        for lemma, type_entries in self.entries.items():
-            total = sum(e.count for e in type_entries)
-            if total == 0:
-                continue
-            for e in type_entries:
-                e.log_prob = math.log(e.count / total)
-
-    def best_type(self, lemma: str) -> LexTypeEntry | None:
-        entries = self.entries.get(lemma)
-        if not entries:
-            return None
-        return max(entries, key=lambda e: e.count)
-
-    def to_dict(self) -> dict:
-        return {
-            lemma: [
-                {"modal_mode": e.modal_mode, "category_id": e.category_id,
-                 "arity": e.arity, "count": e.count, "log_prob": e.log_prob}
-                for e in entries
-            ]
-            for lemma, entries in self.entries.items()
-        }
-
-    def save(self, path: Path):
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2))
-        logger.info("Saved lexicon for %s to %s (%d lemmas)", self.language, path, len(self.entries))
-
-    @classmethod
-    def load(cls, language: str, path: Path) -> "PerLanguageLexicon":
-        data = json.loads(path.read_text())
-        lex = cls(language=language)
-        for lemma, entries in data.items():
-            for e in entries:
-                lex.entries[lemma].append(LexTypeEntry(
-                    e["modal_mode"], e["category_id"], e["arity"],
-                    count=e["count"], log_prob=e["log_prob"],
-                ))
-        return lex
+class LexEntry:
+    lemma:       str
+    ucca_cat:    str
+    modal_mode:  str   = "diamond"
+    count:       float = 1.0
+    probability: float = 0.0
 
 
 class MtlgInducer:
-    """Induces a probabilistic MTLG lexicon from MTLG graphs derived from UD trees."""
-
-    def __init__(self, language: str):
+    def __init__(self, language: str = "en") -> None:
         self.language = language
-        self.lexicon  = PerLanguageLexicon(language=language)
-        self._trees_processed = 0
+        self._entries: dict[str, list[LexEntry]] = defaultdict(list)
 
-    def observe_graph(self, graph: MtlgGraph):
-        """Update lexicon counts from one MTLG graph."""
-        for node in graph.nodes:
-            # Weight by: arity > 0 gives more signal (functors)
-            weight = 1.5 if node.arity > 0 else 1.0
-            self.lexicon.update(node.lemma, node.modal_mode, node.category_id, node.arity, weight)
-        self._trees_processed += 1
+    def observe(self, lemma: str, category_id: int, count: float = 1.0) -> None:
+        cat_label = f"cluster_{category_id}"
+        entries   = self._entries[lemma]
+        existing  = next((e for e in entries if e.ucca_cat == cat_label), None)
+        if existing:
+            existing.count += count
+        else:
+            entries.append(LexEntry(lemma=lemma, ucca_cat=cat_label, count=count))
 
-    def induce_from_stream(
-        self,
-        trees: Iterator[MtlgGraph],
-        max_trees: int = 10_000,
-    ) -> PerLanguageLexicon:
-        """Induce lexicon from a stream of MTLG graphs."""
-        for i, graph in enumerate(trees):
-            if i >= max_trees:
+    def normalise(self) -> None:
+        for entries in self._entries.values():
+            total = sum(e.count for e in entries) + 1e-12
+            for e in entries:
+                e.probability = e.count / total
+
+    def best_type(self, lemma: str) -> Optional[LexEntry]:
+        entries = self._entries.get(lemma, [])
+        return max(entries, key=lambda e: e.probability if e.probability > 0 else e.count) if entries else None
+
+    def induce_from_stream(self, graphs: Iterator, max_trees: int = 10_000) -> "MtlgInducer":
+        count = 0
+        for g in graphs:
+            if count >= max_trees:
                 break
-            self.observe_graph(graph)
-            if i % 1_000 == 0:
-                logger.info("Processed %d trees for %s", i, self.language)
-        self.lexicon.normalize()
-        logger.info("Induced %d lemmas for %s from %d trees",
-                    len(self.lexicon.entries), self.language, self._trees_processed)
-        return self.lexicon
-
-    def parse_accuracy(self, test_graphs: list[MtlgGraph]) -> float:
-        """Estimate parse accuracy: fraction of nodes where best-predicted type matches gold."""
-        if not test_graphs:
-            return 0.0
-        correct = total = 0
-        for graph in test_graphs:
-            for node in graph.nodes:
-                total += 1
-                best = self.lexicon.best_type(node.lemma)
-                if best and best.modal_mode == node.modal_mode and best.category_id == node.category_id:
-                    correct += 1
-        return correct / total if total > 0 else 0.0
-
-
-def run_induction_pipeline(
-    language:    str,
-    max_samples: int = 5_000,
-    output_dir:  str = "lexicons",
-) -> PerLanguageLexicon:
-    import sys
-    from pathlib import Path as _Path
-    sys.path.insert(0, str(_Path(__file__).parent.parent / "training"))
-    from mc4_stream import stream_mc4, _split_sentences
-    from c4_sequence_extractor import _sentence_to_sequence
-
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    inducer = MtlgInducer(language)
-    count = 0
-    for item in stream_mc4(language, max_samples=max_samples):
-        for sentence in _split_sentences(item.get("text", "")):
-            if count >= max_samples:
-                break
-            seq = _sentence_to_sequence(sentence, trd_id=0)
-            for step in seq.steps:
-                inducer.lexicon.update(step.lemma, "diamond", 0, 0, 1.0)
+            for node in g.nodes:
+                self.observe(node.lemma, node.category_id)
             count += 1
-    inducer.lexicon.normalize()
-    inducer.lexicon.save(out_path / f"{language}_lexicon.json")
-    return inducer.lexicon
+        self.normalise()
+        return self
 
+    @property
+    def entries(self) -> dict:
+        return self._entries
 
-if __name__ == "__main__":
-    import sys
-    lang = sys.argv[1] if len(sys.argv) > 1 else "en"
-    lex  = run_induction_pipeline(lang, max_samples=100)
-    print(f"Induced {len(lex.entries)} characters for {lang}")
-    top = sorted(lex.entries.items(),
-                 key=lambda kv: sum(e.count for e in kv[1]), reverse=True)[:10]
-    for char, entries in top:
-        best = max(entries, key=lambda e: e.count)
-        print(f"  {repr(char)}: count={best.count:.0f}")
+    def save(self, path: Path) -> None:
+        data = {
+            lemma: [{"ucca_cat": e.ucca_cat, "modal_mode": e.modal_mode,
+                     "count": e.count, "probability": e.probability} for e in entries]
+            for lemma, entries in self._entries.items()
+        }
+        path.write_text(json.dumps(data, indent=2))
+
+    def load(self, path: Path) -> None:
+        data = json.loads(path.read_text())
+        for lemma, raw in data.items():
+            for r in raw:
+                self._entries[lemma].append(LexEntry(
+                    lemma=lemma, ucca_cat=r["ucca_cat"],
+                    modal_mode=r.get("modal_mode", "diamond"),
+                    count=r["count"], probability=r["probability"],
+                ))
