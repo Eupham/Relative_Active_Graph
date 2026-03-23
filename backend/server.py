@@ -411,7 +411,7 @@ def generate(req: InferenceRequest):
             def _stable_node_id(lemma: str) -> int:
                 h = 0xcbf29ce484222325
                 for b in lemma.encode():
-                    h = ((h ^ b) * 0x000001000001b3) & 0xFFFFFFFFFFFFFFFF
+                    h = ((h ^ b) * 0x00000100000001b3) & 0xFFFFFFFFFFFFFFFF
                 return h
             
             for w in words:
