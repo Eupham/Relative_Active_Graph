@@ -1,0 +1,26 @@
+pub mod context_stack;
+pub mod numerica_adapter;
+pub mod edge;
+pub mod egraph_adapter;
+pub mod graphica_adapter;
+pub mod lifting;
+pub mod node;
+pub mod passage_context;
+pub mod search;
+pub mod situation;
+pub mod synonym_edge;
+pub mod transient_repr;
+pub mod type_normalizer;
+
+pub use context_stack::ContextStack;
+pub use edge::{ArgEdge, EdgeClass};
+pub use egraph_adapter::ArgEGraph;
+pub use graphica_adapter::GraphicaCache;
+pub use lifting::LiftingRuleRegistry;
+pub use node::{ArgNode, NodeClass};
+pub use passage_context::PassageContext;
+pub use search::{ArgSearch, ArgGraph};
+pub use situation::{SituationRegistry, Trd};
+pub use synonym_edge::SlotOccupancyTracker;
+pub use transient_repr::{Tr, Lifecycle, RepContent, Granularity};
+pub use type_normalizer::TypeNormalizer;

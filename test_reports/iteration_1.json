@@ -1,0 +1,49 @@
+{
+  "iteration": 1,
+  "summary": "All 6 identified bugs analyzed, 4 code fixes applied, 2 confirmed already correct",
+  "tests_run": {
+    "rust_cargo_test": {"passed": 132, "failed": 0, "status": "PASS"},
+    "python_hash_consistency": {"status": "PASS", "detail": "64-bit FNV-1a consistent across tokenizer.py, c4_sequence_extractor.py, sequential_trainer.py"},
+    "python_register_lexicon": {"status": "PASS", "detail": "register_lexicon now uses self.send() to consume responses"},
+    "rust_atms_tests": {"passed": 27, "failed": 0, "status": "PASS"},
+    "rust_lse_tests": {"passed": 3, "failed": 0, "status": "PASS"}
+  },
+  "fixes": [
+    {
+      "file": "core/src/arg/context_stack.rs",
+      "issue": "ContextStack::shift() leaks ATMS bits",
+      "fix": "Added self.bridge.try_reclaim_pending(&[]) between pop() and push()",
+      "status": "FIXED"
+    },
+    {
+      "file": "core/src/arg/numerica_adapter.rs",
+      "issue": "normalize_path_weight changed from LSE to geometric mean",
+      "fix": "Restored numerically stable Log-Sum-Exp implementation, added stricter test assertion",
+      "status": "FIXED"
+    },
+    {
+      "file": "lcs/training/rust_bridge.py",
+      "issue": "register_lexicon fire-and-forget response misalignment",
+      "fix": "Changed to use self.send() to properly consume engine response",
+      "status": "FIXED"
+    },
+    {
+      "file": "lcs/induction/tokenizer.py",
+      "issue": "32-bit FNV in _stable_node_id vs 64-bit in other files",
+      "fix": "Updated to 64-bit FNV-1a matching Rust and other Python callers",
+      "status": "FIXED"
+    },
+    {
+      "file": "multiple files",
+      "issue": "FNV-1 to FNV-1a hash order change",
+      "fix": "Already consistently applied across all files, no persisted state affected",
+      "status": "NO_FIX_NEEDED"
+    },
+    {
+      "file": "core/src/lcs/converter.rs",
+      "issue": "sentence_to_mtlg now properly calls inducer",
+      "fix": "Already correctly implemented (genuine fix in the PR)",
+      "status": "NO_FIX_NEEDED"
+    }
+  ]
+}
