@@ -401,7 +401,11 @@ def generate(req: InferenceRequest):
         if not binary.exists():
             return {"error": f"Binary not found: {binary}"}
         
-        with RustBridge(binary=binary) as bridge:
+        bridge = RustBridge(binary=binary)
+        bridge.READ_TIMEOUT = 15.0
+        bridge.start()
+        
+        try:
             # Register seed words
             words = req.seed_text.split()
             def _stable_node_id(lemma: str) -> int:
@@ -427,10 +431,13 @@ def generate(req: InferenceRequest):
                 "quality": result.get("quality", 0),
                 "satisfied": result.get("satisfied", False),
                 "depth_used": result.get("depth_used", 0),
-                "raw": result,
             }
+        finally:
+            bridge.stop()
+    except TimeoutError:
+        return {"error": "Engine timed out. Train the model first to build knowledge.", "output": ""}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "output": ""}
 
 @app.post("/api/inference/synonym")
 def synonym_query(req: SynonymRequest):
@@ -441,12 +448,20 @@ def synonym_query(req: SynonymRequest):
         if not binary.exists():
             return {"error": f"Binary not found: {binary}"}
         
-        with RustBridge(binary=binary) as bridge:
+        bridge = RustBridge(binary=binary)
+        bridge.READ_TIMEOUT = 10.0
+        bridge.start()
+        
+        try:
             bridge.register_lexicon(predicate=req.word.lower(), language="en", surface=req.word)
             result = bridge.query(text=req.word, situation_id=1, language="en")
             return {"word": req.word, "result": result}
+        finally:
+            bridge.stop()
+    except TimeoutError:
+        return {"error": "Engine timed out. Train the model first.", "word": req.word, "result": {}}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "word": req.word, "result": {}}
 
 @app.get("/api/engine/info")
 def engine_info():
