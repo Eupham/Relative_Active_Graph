@@ -25,6 +25,13 @@ class ParseLeaf:
     lemma:  str   # lowercased form; suffix-paradigm lattice updates this (§0.3)
 
 
+@dataclass
+class ParseNode:
+    """Intermediate lattice chunk during chart parsing."""
+    label: str
+    surface: str
+
+
 class BoundaryInducer:
     """
     Inductive boundary inducer. Zero prior knowledge at initialization.
@@ -69,32 +76,39 @@ class BoundaryInducer:
 
     def _chart_parse(self, text: str) -> list[ParseLeaf]:
         """
-        Greedy left-to-right chart parse using self._rules.
-        Rules are tried in descending support order; longest matching RHS wins.
-        Falls back to single code point when no rule applies.
+        Hierarchical bottom-up lattice parse. 
+        Iteratively applies rules matching RHS sequences to construct non-terminal LHS chunks.
+        Newly grouped non-terminals act as inputs for higher-level CfgRule matches.
         """
-        chars = list(text)
-        leaves: list[ParseLeaf] = []
-        i = 0
-        leaf_id = 1
-        while i < len(chars):
-            matched = False
+        # Initialize lattice with raw code points (bottom layer)
+        nodes: list[ParseNode] = [ParseNode(label=ch, surface=ch) for ch in text if ch.strip()]
+
+        changed = True
+        while changed:
+            changed = False
+            # Rules are inherently sorted by descending support from register_rule(), 
+            # so highest-evidence hierarchical merges take topological precedence.
             for rule in self._rules:
                 span = len(rule.rhs)
-                if i + span <= len(chars):
-                    candidate = chars[i:i + span]
-                    if candidate == rule.rhs:
-                        surface = "".join(candidate)
-                        leaves.append(ParseLeaf(id=leaf_id, text=surface,
-                                                lemma=surface.lower()))
-                        leaf_id += 1
-                        i += span
-                        matched = True
-                        break
-            if not matched:
-                ch = chars[i]
-                if ch.strip():
-                    leaves.append(ParseLeaf(id=leaf_id, text=ch, lemma=ch.lower()))
-                    leaf_id += 1
-                i += 1
-        return leaves
+                if span == 0:
+                    continue
+                    
+                i = 0
+                while i + span <= len(nodes):
+                    candidate_labels = [n.label for n in nodes[i:i + span]]
+                    if candidate_labels == rule.rhs:
+                        # Apply rule: collapse right-hand constituents into LHS non-terminal
+                        merged_surface = "".join(n.surface for n in nodes[i:i + span])
+                        new_node = ParseNode(label=rule.lhs, surface=merged_surface)
+                        
+                        # Rebuild lattice layer
+                        nodes = nodes[:i] + [new_node] + nodes[i + span:]
+                        changed = True
+                        break # Reset to top-priority rule loop after mutation
+                if changed:
+                    break # Break out of rule iteration to retry from top support rule
+                    
+        return [
+            ParseLeaf(id=idx + 1, text=n.surface, lemma=n.surface.lower())
+            for idx, n in enumerate(nodes)
+        ]
