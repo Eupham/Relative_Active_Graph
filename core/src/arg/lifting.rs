@@ -2,7 +2,7 @@
 //! Algebraic weight scaling is handled inline; numerica_adapter owns path normalization.
 
 use std::collections::HashMap;
-use crate::types::{ModalType, ModalMode, TypeCategory, Direction, ContextId};
+use crate::types::{ModalType, ModalMode, TypeCategory, ContextId};
 use crate::arg::transient_repr::Tr;
 
 /// A lifting rule: transforms a source modal type to a target modal type.

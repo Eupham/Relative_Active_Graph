@@ -1,13 +1,11 @@
 //! Context stack: push/pop/shift with integrated ATMS env management and TR lifecycle.
 //! DRS referents lift to parent context on pop().
 
-use std::collections::HashMap;
 use crate::types::{ContextId, Env, TRDId, ModalType};
 use crate::atms::ContextBridge;
 use crate::arg::{
     transient_repr::{Tr, Lifecycle, RepContent, Granularity},
     lifting::LiftingRuleRegistry,
-    situation::SituationRegistry,
 };
 
 /// A predication condition in a DRS with accessibility tracking.

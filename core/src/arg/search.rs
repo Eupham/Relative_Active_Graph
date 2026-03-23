@@ -6,12 +6,11 @@ use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
 use petgraph::stable_graph::{StableGraph, NodeIndex};
 use petgraph::Directed;
-use crate::types::{NodeId, EdgeId, Env, TRDId, ModalType, ModalMode};
+use crate::types::{NodeId, Env};
 use crate::arg::{
-    node::{ArgNode, NodeClass},
-    edge::{ArgEdge, EdgeClass},
+    node::ArgNode,
+    edge::ArgEdge,
 };
-use crate::atms::base::env::subsumes;
 
 pub const MAX_NODES_PER_CONTEXT: usize = 500;
 

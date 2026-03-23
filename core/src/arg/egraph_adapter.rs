@@ -3,7 +3,7 @@
 //! ◇-composed and □-composed subgraphs never merge into the same e-class.
 
 use egg::{define_language, Analysis, DidMerge, EGraph, Id, RecExpr, Rewrite, Runner, Symbol};
-use crate::types::{ModalMode, TypeCategory, ModalType};
+use crate::types::{ModalMode, TypeCategory};
 
 // ─── Language definition ──────────────────────────────────────────────────────
 

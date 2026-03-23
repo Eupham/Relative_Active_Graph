@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use crate::types::{TRDId, InfonId, NodeId, Infon, Situation};
+use crate::types::{TRDId, InfonId, Infon, Situation};
 
 /// A TRD (Transient Relative Domain): cluster of co-activating situation types,
 /// infon patterns, and MTLG modal type profiles.
