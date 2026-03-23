@@ -89,16 +89,15 @@ pub fn bisimulation_partition(
 
     while let Some((splitter_block, mode)) = worklist.pop() {
         // Find all nodes that have a `mode`-labeled edge into `splitter_block`.
-        let predecessors: HashSet<NodeId> = nodes.iter()
-            .filter(|&&n| {
-                reverse.get(&n).map_or(false, |preds|
-                    preds.iter().any(|(from, m)| {
-                        *m == mode && node_to_block.get(from) == Some(&splitter_block)
-                    })
-                )
-            })
-            .copied()
-            .collect();
+        let predecessors: HashSet<NodeId> = {
+            // Collect nodes in splitter_block, then find their predecessors via reverse map.
+            nodes.iter().copied()
+                .filter(|n| node_to_block.get(n) == Some(&splitter_block))
+                .flat_map(|s| reverse.get(&s).into_iter().flatten())
+                .filter(|(_, m)| *m == mode)
+                .map(|(from, _)| *from)
+                .collect()
+        };
 
         if predecessors.is_empty() { continue; }
 
