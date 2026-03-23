@@ -1,0 +1,4 @@
+[target.x86_64-unknown-linux-gnu]
+# lld is ~3-5x faster than the system linker for incremental builds
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

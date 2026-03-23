@@ -9,10 +9,11 @@
 //! The Betti number $b_1$ (dimension of $H^1$) physically quantifies the number of 
 //! global topological obstructions (local consistencies failing to extend globally).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::types::{NodeId, ModalType, ModalMode, Direction};
 use crate::arg::{ArgGraph, ArgEdge};
 use petgraph::visit::EdgeRef;
+use petgraph::stable_graph::NodeIndex;
 // Numerica and graphica external integration points
 use numerica::*;
 use graphica::*;
@@ -69,8 +70,25 @@ fn compute_h1_betti(graph: &ArgGraph) -> usize {
     
     // Euler characteristic implies \chi = V - E
     // For 1D complex, \chi = b_0 - b_1, so b_1 = E - V + b_0
-    // We compute b_0 (connected components) via petgraph:
-    let b0 = petgraph::algo::connected_components(graph);
+    // We compute b_0 (connected components) via BFS since StableGraph
+    // does not implement NodeCompactIndexable required by connected_components:
+    let b0 = {
+        let mut visited: HashSet<NodeIndex> = HashSet::new();
+        let mut components = 0usize;
+        for start in graph.node_indices() {
+            if visited.contains(&start) { continue; }
+            components += 1;
+            let mut queue = VecDeque::new();
+            queue.push_back(start);
+            visited.insert(start);
+            while let Some(n) = queue.pop_front() {
+                for nb in graph.neighbors_undirected(n) {
+                    if visited.insert(nb) { queue.push_back(nb); }
+                }
+            }
+        }
+        components
+    };
     
     // H^1 dimension (b_1) counts the fundamental cycles / obstructions
     let b1 = edge_count as isize - node_count as isize + b0 as isize;
