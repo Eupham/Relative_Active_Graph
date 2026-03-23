@@ -38,20 +38,16 @@ fn build_bf_atms(
 
 /// Resolve the ATMS assumption bits that underlie `edge_id`.
 ///
-/// An edge's causal assumption is represented by the assumption bits present in
-/// the source node's ATMS label that are *not* shared with the destination node.
-/// These are the bits that, if contradicted, would sever this particular link.
+/// Per §4c: reads edge.label directly (the minimal assumption set for this edge,
+/// populated at edge creation from the ATMS justification head's environment).
+/// Seed edges have label = 0 (Env::EMPTY). The old src_label & !dst_label
+/// heuristic is removed entirely.
 fn resolve_edge_assumptions(graph: &ArgGraph, edge_id: EdgeId) -> Env {
-    let edge_idx = match graph.edge_indices().find(|&ei| graph[ei].id == edge_id) {
-        Some(ei) => ei,
-        None     => return 0,
-    };
-    let (src_idx, dst_idx) = graph.edge_endpoints(edge_idx).unwrap();
-    let src_label = graph[src_idx].atms_label;
-    let dst_label = graph[dst_idx].atms_label;
-    // Bits present in src but not dst: these are the assumptions specific to src
-    // that flow through this edge and are not independently justified in dst.
-    src_label & !dst_label
+    graph
+        .edge_indices()
+        .find(|&ei| graph[ei].id == edge_id)
+        .map(|ei| graph[ei].label)
+        .unwrap_or(0)
 }
 
 /// Execute a do(e=absent) intervention on `edge_id`.
@@ -93,15 +89,18 @@ pub fn do_absent(
     let mut bf = build_bf_atms(graph, &scope, active_env);
     let result = bf.run_intervention(edge_assumptions, active_env);
 
-    // SCM quality delta: measured at dst (child), not src.
-    // Baseline: dst's value with the edge intact.
-    // Counterfactual: dst's value when its incoming equation from src is replaced
-    // by its observed baseline (mean over context), cutting the src→dst dependency.
-    let scm_before   = scm.compute(dst_id).unwrap_or(0.5);
-    let dst_baseline = scm.values.get(&dst_id).copied().unwrap_or(scm_before);
-    let intervened_scm = scm.intervene(dst_id, dst_baseline);
-    let scm_after    = intervened_scm.compute(dst_id).unwrap_or(dst_baseline);
+    // SCM quality delta: measured at dst (child), not src (§3).
+    // Baseline: computed value under current structural equations (not observed value).
+    let scm_before = scm.compute(dst_id).unwrap_or(0.5);
+
+    // Sever src → dst by zeroing src's coefficient in dst's structural equation.
+    // Pearl do-calculus: do(X=absent) ≡ setting all β_k = 0 for parent X (§3b).
+    let counterfactual_scm = scm.remove_parent(dst_id, src_id);
+    let scm_after = counterfactual_scm.compute(dst_id).unwrap_or(scm_before);
+
     let quality_delta = scm_before - scm_after;
+    // Aggregation: direct counterfactual delta on dst_id only.
+    // Downstream propagation (§3c) is deferred; delta on dst captures the primary effect.
 
     InterventionResult {
         edge_id,

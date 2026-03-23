@@ -176,12 +176,39 @@ impl Situation {
 
 // ─── Infon ────────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Polarity { Positive, Negative }
+
+/// A temporal interval anchoring a situation in time.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TemporalInterval {
+    pub before: Option<u64>,  // event ID or timestamp
+    pub after:  Option<u64>,
+}
+
+/// A spatial region anchor (placeholder; SpatialRegion = () for now).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpatialRegion;
+
+/// Situational anchor: links an infon to a situation with optional time/space.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SituationAnchor {
+    pub situation_id:      u64,
+    pub temporal_interval: Option<TemporalInterval>,
+    pub spatial_region:    Option<SpatialRegion>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Infon {
     pub id:       InfonId,
     pub relation: String,
     pub args:     Vec<NodeId>,
+    /// Legacy boolean polarity kept for backward compat. Use `infon_polarity` for new code.
     pub polarity: bool,
+    /// Typed polarity (§16).
+    pub infon_polarity: Polarity,
+    /// Situational anchor: where and when this infon holds (§16).
+    pub location: Option<SituationAnchor>,
 }
 
 // ─── Cache key ────────────────────────────────────────────────────────────────

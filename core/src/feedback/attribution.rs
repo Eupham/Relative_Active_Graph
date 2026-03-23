@@ -75,7 +75,7 @@ impl AttributionEngine {
             .map_or(0, |e| e.1);
 
         let delta = if is_causal {
-            let result    = self.bootstrapper.estimate_causal_effect(edge_id, trd_id);
+            let result    = self.bootstrapper.estimate_attributional_score(edge_id, trd_id);
             let frequency = self.bootstrapper.frequency_in_trd(edge_id, trd_id);
             compute_causal_delta(&result, frequency)
         } else {

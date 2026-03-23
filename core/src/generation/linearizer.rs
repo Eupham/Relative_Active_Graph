@@ -70,15 +70,13 @@ impl PerLanguageLexicon {
     /// so we can re-hash each entry's predicate to find a match.
     /// This is O(|lexicon|) and intended only as a fallback for abstract nodes.
     pub fn surface_for_node_id(&self, node_id: NodeId, language: &str) -> Option<&str> {
-        use sha2::{Sha256, Digest};
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME:  u64 = 0x0000_0100_0000_01b3;
         let lex = self.entries.get(language)
             .or_else(|| self.entries.get(&self.default_lang))?;
         lex.values().find(|entry| {
-            let mut h = Sha256::new();
-            h.update(entry.predicate.as_bytes());
-            let result = h.finalize();
-            let mut id: u64 = 0;
-            for &b in &result[..6] { id = (id << 8) | (b as u64); }
+            let id = entry.predicate.bytes()
+                .fold(FNV_OFFSET, |h, b| h.wrapping_mul(FNV_PRIME) ^ b as u64);
             id == node_id
         }).map(|e| e.surface.as_str())
     }

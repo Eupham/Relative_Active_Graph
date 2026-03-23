@@ -1,10 +1,18 @@
-//! TRD-relative VDBE-style threshold update.
+//! Variance-Adaptive Threshold (VAT).
 //! θ_α(d, t+1) = θ_min + (θ_max − θ_min) × (1 − σ²_d(t) / σ²_max(d))
 //!
 //! High variance → explore (low θ_α → more nodes activated).
 //! Low variance  → exploit (high θ_α → fewer nodes, tighter focus).
+//!
+//! This is NOT VDBE (Thrun 1992, "The role of exploration in learning control").
+//! The formula most closely resembles:
+//!   Kaelbling (1993), "Learning to Achieve Goals", IJCAI-93 (Interval Estimation)
+//! or the UCB1 exploration bonus:
+//!   Auer, Cesa-Bianchi & Fischer (2002), "Finite-time Analysis of the
+//!   Multiarmed Bandit Problem", Machine Learning 47:235–256.
 
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 use crate::types::TRDId;
 use super::performance_ema::PerfRegistry;
 
@@ -16,7 +24,7 @@ pub const RHO_ALPHA_RATIO: f64 = 0.95;
 pub const THETA_COLD_START: f64 = 0.4;
 
 /// Per-TRD threshold state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrdThresholds {
     pub trd_id:      TRDId,
     pub theta_alpha: f64,
@@ -41,6 +49,7 @@ impl TrdThresholds {
 }
 
 /// Registry of per-TRD thresholds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThresholdRegistry {
     thresholds: HashMap<TRDId, TrdThresholds>,
 }

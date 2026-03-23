@@ -1,6 +1,12 @@
-//! TRD-relative causal bootstrapping (Little & Badawy 2020).
-//! Resamples context with do(e=absent) and estimates the ATE with a 95% CI.
-//! An edge's causal effect is considered reliable only when CI lower bound > 0.
+//! Attributional scoring via bootstrap resampling.
+//!
+//! Estimates the *observational* correlation between edge presence and output
+//! quality across TRD samples. This is NOT causal effect estimation in the
+//! Pearl do-calculus sense — that role belongs to `causal::intervention`
+//! after the §3 fix. An edge may correlate with quality because high-quality
+//! reasoning contexts tend to use it, not because the edge causes quality.
+//!
+//! Use this score as a heuristic ranking signal, not a causal claim.
 
 use rand::prelude::*;
 use crate::types::{NodeId, EdgeId, TRDId, Quality};
@@ -17,23 +23,24 @@ pub struct QualitySample {
     pub edge_contributions:  Vec<EdgeId>,
 }
 
-/// Bootstrap estimate of the causal effect of edge `e` in TRD `d`.
+/// Bootstrap estimate of the attributional score of edge `e` in TRD `d`.
+/// This is an observational correlation score, NOT a causal ATE (§13).
 #[derive(Debug, Clone)]
 pub struct BootstrapResult {
-    /// Mean quality drop across all bootstrap resamples (point estimate of ATE).
+    /// Mean quality drop across all bootstrap resamples (point estimate of attributional score).
     pub point_estimate: f64,
     /// 2.5th percentile of the bootstrap distribution of quality drops.
     pub ci_lower:       f64,
     /// 97.5th percentile of the bootstrap distribution of quality drops.
     pub ci_upper:       f64,
     pub n_resamples:    usize,
-    /// True only when the CI lower bound exceeds zero — i.e., the effect is
+    /// True only when the CI lower bound exceeds zero — i.e., the attributional score is
     /// reliably positive at the 95% level under the bootstrap distribution.
     pub is_reliable:    bool,
 }
 
 impl BootstrapResult {
-    /// Causal effect is actionable only when reliably positive.
+    /// Attributional score is actionable only when reliably positive.
     pub fn causal_fraction(&self) -> f64 {
         if self.is_reliable { self.point_estimate } else { 0.0 }
     }
@@ -53,14 +60,14 @@ impl CausalBootstrapper {
         self.samples.push(sample);
     }
 
-    /// Estimate the causal effect of `edge_id` in `trd_id` as a bootstrapped ATE.
+    /// Estimate the attributional score of `edge_id` in `trd_id` via bootstrap resampling.
     ///
     /// Each resample computes the mean quality drop observed when samples using
-    /// `edge_id` are excluded (simulating do(e=absent)). The distribution of
-    /// these per-resample drops is used to compute a 95% CI.
+    /// `edge_id` are excluded. The distribution of per-resample drops is used to
+    /// compute a 95% CI. This is observational correlation, NOT causal ATE (§13).
     ///
-    /// Returns a zero-effect result when insufficient data is available.
-    pub fn estimate_causal_effect(
+    /// Returns a zero-score result when insufficient data is available.
+    pub fn estimate_attributional_score(
         &mut self,
         edge_id: EdgeId,
         trd_id:  TRDId,
@@ -161,7 +168,7 @@ mod tests {
         for i in 20..40 {
             b.add_sample(make_sample(i, 0, 0.0, vec![]));
         }
-        let result = b.estimate_causal_effect(1, 0);
+        let result = b.estimate_attributional_score(1, 0);
         // Removing edge 1 drops quality from 0.5 baseline (mixed) to ~0.0 in without-edge set.
         // The CI lower bound should be positive.
         assert!(result.point_estimate > 0.0, "expected positive ATE: {:?}", result);
@@ -171,7 +178,7 @@ mod tests {
     fn insufficient_data_returns_zero_effect() {
         let mut b = CausalBootstrapper::new(42);
         b.add_sample(make_sample(0, 0, 0.9, vec![1]));
-        let result = b.estimate_causal_effect(1, 0);
+        let result = b.estimate_attributional_score(1, 0);
         assert!(!result.is_reliable);
         assert_eq!(result.causal_fraction(), 0.0);
     }

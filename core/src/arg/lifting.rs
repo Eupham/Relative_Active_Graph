@@ -1,6 +1,5 @@
 //! Modal lifting rules LR(τ→τ'): transform MTLG modal types during context shifts.
-//! Algebraic component (unit conversion, scaling) is handled by symbolica_adapter;
-//! this module handles the type transformation component.
+//! Algebraic weight scaling is handled inline; numerica_adapter owns path normalization.
 
 use std::collections::HashMap;
 use crate::types::{ModalType, ModalMode, TypeCategory, Direction, ContextId};
@@ -53,17 +52,9 @@ impl ModalLiftingRule {
         }
     }
 
-    pub fn apply_weight(
-        &self,
-        normalizer: &crate::arg::symbolica_adapter::AlgebraicNormalizer,
-        weight: f32,
-    ) -> f32 {
-        match &self.algebraic_transform {
-            Some(name) => crate::arg::symbolica_adapter::apply_named_transform(
-                normalizer, name, weight,
-            ),
-            None => weight,
-        }
+    pub fn apply_weight(&self, weight: f32) -> f32 {
+        // `algebraic_transform` tag is reserved for future numerica extensions.
+        weight
     }
 }
 
@@ -112,16 +103,15 @@ impl LiftingRuleRegistry {
     /// Returns Some((new_type, weight_scale)) on match, None if dissolved.
     pub fn lift_tr_with_weight(
         &self,
-        tr:         &Tr,
-        from_ctx:   ContextId,
-        to_ctx:     ContextId,
-        normalizer: &crate::arg::symbolica_adapter::AlgebraicNormalizer,
+        tr:       &Tr,
+        from_ctx: ContextId,
+        to_ctx:   ContextId,
     ) -> Option<(ModalType, f32)> {
         let rules = self.rules.get(&(from_ctx, to_ctx))
             .map(|v| v.as_slice()).unwrap_or(&[]);
         for rule in rules.iter().chain(self.default_rules.iter()) {
             if let Some(new_type) = rule.apply(tr.mtlg_type) {
-                return Some((new_type, rule.apply_weight(normalizer, 1.0)));
+                return Some((new_type, rule.apply_weight(1.0)));
             }
         }
         None

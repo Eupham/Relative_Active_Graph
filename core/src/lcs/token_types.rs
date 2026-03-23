@@ -10,13 +10,10 @@ pub fn fnv_hash(s: &str) -> u32 {
 }
 
 pub fn stable_node_id(lemma: &str) -> u64 {
-    use sha2::{Sha256, Digest};
-    let mut h = Sha256::new();
-    h.update(lemma.as_bytes());
-    let r = h.finalize();
-    let mut id: u64 = 0;
-    for &b in &r[..6] { id = (id << 8) | (b as u64); }
-    id
+    // FNV-1a 64-bit hash. Replaced SHA-256 (§7): faster, no crypto dep needed.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME:  u64 = 0x0000_0100_0000_01b3;
+    lemma.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64)
 }
 
 #[derive(Clone, Debug)]

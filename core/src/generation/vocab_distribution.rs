@@ -2,7 +2,6 @@
 //! Maps cross-entropy gradient to Quality signal for teacher forcing.
 //! Vocabulary identity is the NodeId itself — not a transient edge ID.
 
-use sha2::{Sha256, Digest};
 use crate::types::{NodeId, Quality, Env};
 use crate::arg::ArgGraph;
 
@@ -88,17 +87,11 @@ impl VocabDistribution {
     }
 }
 
-/// Stable 48-bit node hash matching c4_sequence_extractor._stable_node_id.
-/// This function must remain byte-for-byte compatible with the Python side.
+/// Stable node hash via FNV-1a (matches token_types::stable_node_id).
 fn stable_node_id(predicate: &str) -> NodeId {
-    let mut hasher = Sha256::new();
-    hasher.update(predicate.as_bytes());
-    let result = hasher.finalize();
-    // Take the first 6 bytes (48 bits) as a u64, matching Python's & 0xFFFFFFFFFFFF.
-    let bytes = &result[..6];
-    let mut id: u64 = 0;
-    for &b in bytes { id = (id << 8) | (b as u64); }
-    id
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME:  u64 = 0x0000_0100_0000_01b3;
+    predicate.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64)
 }
 
 #[cfg(test)]

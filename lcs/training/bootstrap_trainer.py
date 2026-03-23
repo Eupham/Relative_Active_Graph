@@ -1,8 +1,8 @@
 """
-bootstrap_trainer.py — Phase 0 bootstrap: mC4 → UD → MTLG → cluster → export.
+bootstrap_trainer.py — Phase 0 bootstrap: mC4 → MTLG → community induction → export.
 
 Runs the full bootstrap pipeline to produce:
-  - categories.json   (cluster centroids + labels)
+  - categories.json   (community descriptors + sizes)
   - trd_profiles.json (modal type profiles per TRD)
   - edge_vocab.json   (edge ID → surface token mapping)
 
@@ -10,7 +10,6 @@ These artefacts are loaded by Rust's bootstrap_loader at training time.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, asdict
@@ -20,16 +19,22 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 
+def _fnv_hash(s: str) -> int:
+    h = 0x811c9dc5
+    for b in s.encode():
+        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
 # No hard-coded prototype labels: all category IDs are opaque u32 values
-# assigned by the BIC-guided k-means bootstrap.  None carry linguistic names.
+# assigned by the SBM Leiden MDL bootstrap.  None carry linguistic names.
 
 
 @dataclass
 class CategoryRecord:
-    id: int
-    label: str
-    centroid: list[float]
-    count: int
+    id:         int
+    descriptor: list[str]   # top-5 surface forms (cluster descriptor)
+    size:       int
 
 
 @dataclass
@@ -56,9 +61,8 @@ class BootstrapTrainer:
         trainer.save()
     """
 
-    def __init__(self, output_dir: Path, n_clusters: int = 16):
+    def __init__(self, output_dir: Path):
         self.output_dir = output_dir
-        self.n_clusters = n_clusters
         self.artefacts  = BootstrapArtefacts()
         self._next_edge_id = 1
 
@@ -67,41 +71,46 @@ class BootstrapTrainer:
     def run(self, sentences: list[str]) -> BootstrapArtefacts:
         """
         Full bootstrap from raw sentences.
-        No UD parser. No pretrained model.
+        No UD parser. No pretrained model. No k-means.
+        Uses SBM Leiden MDL community induction.
         """
-        import sys, hashlib
+        import sys
         from pathlib import Path as _Path
         sys.path.insert(0, str(_Path(__file__).parent.parent / "induction"))
-        import numpy as np
-        from trd_bootstrap import (TrdBootstrapper, build_bigram_vocabulary,
-                                    _sentence_to_bigram_vector)
+        from community_inducer import CommunityInducer
         from c4_sequence_extractor import _sentence_to_sequence
 
         logger.info("Bootstrap: processing %d sentences", len(sentences))
-        bootstrapper = TrdBootstrapper(n_clusters=self.n_clusters)
-        trds = bootstrapper.bootstrap(sentences, language="bootstrap")
 
-        # Categories from cluster centroids.
-        if bootstrapper._model is not None and bootstrapper._model.centroids is not None:
-            for i, centroid in enumerate(bootstrapper._model.centroids):
-                self.artefacts.categories.append(CategoryRecord(
-                    id=i + 1,
-                    label=f"cluster_{i}",
-                    centroid=centroid.tolist() if hasattr(centroid, "tolist") else list(centroid),
-                    count=sum(1 for t in trds if t.trd_id == i),
-                ))
+        # Build co-occurrence data from sentences.
+        inducer = CommunityInducer(window=3)
+        for sentence in sentences:
+            tokens = sentence.split()
+            inducer.observe_sentence(tokens)
 
-        # TRD profiles from cluster bigram distributions.
-        for trd in trds:
+        # Fit communities via SBM Leiden MDL.
+        communities = inducer.fit()
+
+        # Categories from community descriptors.
+        for community in communities:
+            self.artefacts.categories.append(CategoryRecord(
+                id=community.id,
+                descriptor=community.top5,
+                size=community.size,
+            ))
+
+        # TRD profiles from community bigram distributions.
+        for community in communities:
             type_counts: dict[str, int] = {}
-            for bigram, freq in trd.modal_profile.items():
-                cat_id = int(hashlib.sha256(bigram.encode()).hexdigest(), 16) % 65536
+            for surface in community.members:
+                # Use FNV hash for stable, deterministic bigram IDs (§20.3).
+                cat_id = _fnv_hash(surface) & 0xFFFF
                 key = f"0,{cat_id}"
-                type_counts[key] = type_counts.get(key, 0) + int(freq * 1000)
+                type_counts[key] = type_counts.get(key, 0) + 1
             self.artefacts.trd_profiles.append(TrdProfileRecord(
-                trd_id=trd.trd_id,
+                trd_id=community.id,
                 type_counts=type_counts,
-                total_tokens=trd.support,
+                total_tokens=community.size,
             ))
 
         # Edge vocab from character sequences (first 500 sentences only).

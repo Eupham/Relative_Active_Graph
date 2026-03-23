@@ -132,7 +132,8 @@ mod tests {
         let mut trd = Trd::new(0, "code-gen");
         trd.infon_patterns = vec!["function".into(), "return".into()];
         let infons = vec![
-            Infon { id: 0, relation: "function-call".into(), args: vec![], polarity: true },
+            Infon { id: 0, relation: "function-call".into(), args: vec![], polarity: true,
+                    infon_polarity: crate::types::Polarity::Positive, location: None },
         ];
         let score = trd.match_score(&infons);
         assert!(score > 0.0 && score <= 1.0);
@@ -148,15 +149,18 @@ mod tests {
         reg.register_situation(sit);
 
         // Positive infon with anchored args — should be supported
-        reg.register_infon(Infon { id: 100, relation: "rel".into(), args: vec![10, 20], polarity: true });
+        reg.register_infon(Infon { id: 100, relation: "rel".into(), args: vec![10, 20], polarity: true,
+                                   infon_polarity: crate::types::Polarity::Positive, location: None });
         assert!(reg.supports(1, 100));
 
         // Negative infon — should not be supported
-        reg.register_infon(Infon { id: 101, relation: "rel".into(), args: vec![10], polarity: false });
+        reg.register_infon(Infon { id: 101, relation: "rel".into(), args: vec![10], polarity: false,
+                                   infon_polarity: crate::types::Polarity::Negative, location: None });
         assert!(!reg.supports(1, 101));
 
         // Positive infon with unanchored arg — should not be supported
-        reg.register_infon(Infon { id: 102, relation: "rel".into(), args: vec![99], polarity: true });
+        reg.register_infon(Infon { id: 102, relation: "rel".into(), args: vec![99], polarity: true,
+                                   infon_polarity: crate::types::Polarity::Positive, location: None });
         assert!(!reg.supports(1, 102));
     }
 
@@ -169,7 +173,8 @@ mod tests {
         reg.register_situation(sit);
 
         // Infon anchored in situation
-        reg.register_infon(Infon { id: 1, relation: "function-call".into(), args: vec![5], polarity: true });
+        reg.register_infon(Infon { id: 1, relation: "function-call".into(), args: vec![5], polarity: true,
+                                   infon_polarity: crate::types::Polarity::Positive, location: None });
 
         let mut trd = Trd::new(0, "code-gen");
         trd.infon_patterns = vec!["function".into()];

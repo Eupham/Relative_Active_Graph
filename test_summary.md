@@ -34,7 +34,7 @@ Assigned TRD cluster: en_trd_10
 **Why this proves the theory:**
 *   **Semantic Grounding:** Notice how "discovered" is correctly categorized as a `Process` and "new" as a `State`. This means the system successfully learned structural semantics purely from the dependency relationships in the C4 corpus.
 *   **Situation Awareness:** The sentence was successfully mapped to `en_trd_10`. This means the modal profile (the specific mixture of diamonds, processes, states, etc.) was recognized as belonging to a specific cluster of situation types, demonstrating that the reasoning engine can adapt its activation thresholds based on context.
-*   **Zero LLM Usage:** This entire process relied solely on dependency parsing (Stanza) and formal type induction (MTLG).
+*   **Zero External Parser:** This entire process relies on grammar-driven boundary induction (BoundaryInducer) and formal type induction (MTLG). No Stanza, no UD parser, no pre-trained models.
 
 ## 2. Rust Generative Inference Demonstration
 

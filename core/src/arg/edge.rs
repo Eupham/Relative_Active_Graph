@@ -30,6 +30,11 @@ pub struct ArgEdge {
     pub atms_justification: Vec<NodeId>,
     /// Canonical ID for Graphica memoization: points to an equivalence class.
     pub canonical_id: Option<u64>,
+    /// Minimal ATMS assumption set for this edge (§4).
+    /// Seed edges (no derivation history) have label = 0 (Env::EMPTY per §4b).
+    pub label: Env,
+    /// ATMS justification ID that derived this edge (§4). None for seed edges.
+    pub justification_id: Option<u64>,
 }
 
 impl ArgEdge {
@@ -45,6 +50,8 @@ impl ArgEdge {
             weight: 0.5,
             atms_justification: vec![src, dst],
             canonical_id: None,
+            label: 0, // Seed edge: Env::EMPTY per §4b
+            justification_id: None,
         }
     }
 

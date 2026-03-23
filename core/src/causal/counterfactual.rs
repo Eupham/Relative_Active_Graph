@@ -14,10 +14,12 @@ use crate::arg::ArgGraph;
 /// Δ(e, d) = combined attribution score for edge e in TRD d.
 #[derive(Debug)]
 pub struct AttributionDelta {
-    pub edge_id:          EdgeId,
-    pub trd_id:           TRDId,
-    pub delta:            f64,
-    pub is_causal_phase:  bool,
+    pub edge_id:               EdgeId,
+    pub trd_id:                TRDId,
+    pub delta:                 f64,
+    /// True when this TRD has accumulated sufficient samples (§13).
+    /// This measures sample count readiness, NOT causal identification.
+    pub has_sufficient_samples: bool,
 }
 
 /// The counterfactual reasoner: orchestrates SCM + BF-ATMS + bootstrap.
@@ -64,19 +66,19 @@ impl CounterfactualReasoner {
         trd_id:   TRDId,
         graph:    &ArgGraph,
     ) -> AttributionDelta {
-        let is_causal = self.transition.is_causal(edge_id, trd_id);
+        let has_sufficient = self.transition.is_causal(edge_id, trd_id);
 
-        let delta = if is_causal {
-            // Causal phase: bootstrapped ATE with CI
-            let result    = self.bootstrapper.estimate_causal_effect(edge_id, trd_id);
+        let delta = if has_sufficient {
+            // Sufficient samples: bootstrapped attributional score with CI (§13)
+            let result    = self.bootstrapper.estimate_attributional_score(edge_id, trd_id);
             let frequency = self.bootstrapper.frequency_in_trd(edge_id, trd_id);
             compute_causal_delta(&result, frequency)
         } else {
-            // Correlational phase: freq_successful / freq_total
+            // Insufficient samples: correlational score only
             self.transition.correlational_score(edge_id, trd_id)
         };
 
-        AttributionDelta { edge_id, trd_id, delta, is_causal_phase: is_causal }
+        AttributionDelta { edge_id, trd_id, delta, has_sufficient_samples: has_sufficient }
     }
 
     /// Type consistency: fraction of contexts where this edge's modal mode matched the derivation.
@@ -114,7 +116,7 @@ mod tests {
         for _ in 0..5 { reasoner.record_dissolved_tr(1, 0, Quality::GOOD, vec![10]); }
         for _ in 0..5 { reasoner.record_dissolved_tr(2, 0, Quality::BAD, vec![10]); }
         let delta = reasoner.compute_delta(10, 0, &g);
-        assert!(!delta.is_causal_phase); // not enough samples for causal
+        assert!(!delta.has_sufficient_samples); // not enough samples yet
         assert!((0.0..=1.0).contains(&delta.delta));
     }
 }
