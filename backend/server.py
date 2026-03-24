@@ -33,8 +33,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/")
 def root():
     build_index = Path(__file__).parent.parent / "frontend" / "build" / "index.html"
+    fallback_index = Path(__file__).parent.parent / "frontend" / "fallback" / "index.html"
     if build_index.exists():
         return FileResponse(str(build_index))
+    if fallback_index.exists():
+        return FileResponse(str(fallback_index))
     return {
         "message": "CSRRE backend online. Frontend build not found; run `npm run build` in frontend/.",
         "status": "online",
@@ -552,7 +555,9 @@ async def ws_endpoint(websocket: WebSocket):
 # After all API routes so the catch-all doesn't swallow /api/* paths.
 
 import pathlib as _pathlib
-_BUILD = _pathlib.Path(__file__).parent.parent / "frontend" / "build"
+_FRONTEND_DIR = _pathlib.Path(__file__).parent.parent / "frontend"
+_BUILD = _FRONTEND_DIR / "build"
+_FALLBACK = _FRONTEND_DIR / "fallback" / "index.html"
 
 if _BUILD.exists():
     from fastapi.staticfiles import StaticFiles
@@ -569,8 +574,14 @@ if _BUILD.exists():
     def serve_spa(full_path: str):
         index = _BUILD / "index.html"
         return _FileResponse(str(index))
+elif _FALLBACK.exists():
+    from fastapi.responses import FileResponse as _FileResponse
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_fallback(full_path: str):
+        return _FileResponse(str(_FALLBACK))
 else:
     logger.warning(
-        "React build not found at %s — run `npm run build` inside frontend/",
-        _BUILD,
+        "React build not found at %s and fallback not found at %s",
+        _BUILD, _FALLBACK,
     )

@@ -1,79 +1,84 @@
 """
-Paste this entire file as a single Colab code cell, then Run it.
-It replaces the old streamlit launch with the new React + FastAPI stack.
+Colab launcher for FastAPI + React.
+If React build fails, server still starts and serves fallback UI.
 """
-import os, shutil, subprocess, time, urllib.request, sys
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
 
 ROOT = os.path.abspath(".")
+FRONTEND = os.path.join(ROOT, "frontend")
 
-# ── 1. Install Python deps ────────────────────────────────────────
-subprocess.run([
+
+def run(cmd, *, cwd=None, env=None, check=True):
+    print("▶", " ".join(cmd))
+    return subprocess.run(cmd, cwd=cwd, env=env, check=check)
+
+
+def try_frontend_build() -> bool:
+    run(["node", "--version"], check=False)
+    run(["npm", "--version"], check=False)
+
+    lock_file = os.path.join(FRONTEND, "package-lock.json")
+    if os.path.exists(lock_file):
+        if run(["npm", "ci", "--legacy-peer-deps"], cwd=FRONTEND, check=False).returncode != 0:
+            return False
+    else:
+        if run(["npm", "install", "--legacy-peer-deps"], cwd=FRONTEND, check=False).returncode != 0:
+            return False
+
+    build_env = {
+        **os.environ,
+        "CI": "false",
+        "GENERATE_SOURCEMAP": "false",
+        "NODE_OPTIONS": os.environ.get("NODE_OPTIONS", "--max_old_space_size=4096"),
+    }
+    if run(["npm", "run", "build"], cwd=FRONTEND, env=build_env, check=False).returncode == 0:
+        return True
+
+    print("⚠ npm build failed; retrying after cache clean...")
+    run(["npm", "cache", "clean", "--force"], cwd=FRONTEND, check=False)
+    if run(["npm", "run", "build"], cwd=FRONTEND, env=build_env, check=False).returncode == 0:
+        return True
+
+    print("⚠ npm build failed again; retrying after clean install...")
+    shutil.rmtree(os.path.join(FRONTEND, "node_modules"), ignore_errors=True)
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
+    if run(["npm", "install", "--legacy-peer-deps"], cwd=FRONTEND, check=False).returncode != 0:
+        return False
+    return run(["npm", "run", "build"], cwd=FRONTEND, env=build_env, check=False).returncode == 0
+
+
+# 1) Python deps
+run([
     sys.executable, "-m", "pip", "install", "-q",
     "fastapi", "uvicorn[standard]", "python-multipart",
     "datasets>=2.14", "huggingface-hub>=0.16",
 ], check=True)
 
-# ── 2. Build React frontend ───────────────────────────────────────
-frontend_dir = os.path.join(ROOT, "frontend")
-print("▶ Node/NPM versions:")
-subprocess.run(["node", "--version"], check=True)
-subprocess.run(["npm", "--version"], check=True)
-
+# 2) Frontend build (best effort)
 print("▶ Installing npm deps...")
-lock_file = os.path.join(frontend_dir, "package-lock.json")
-if os.path.exists(lock_file):
-    subprocess.run(["npm", "ci", "--legacy-peer-deps"], cwd=frontend_dir, check=True)
-else:
-    subprocess.run(["npm", "install", "--legacy-peer-deps"], cwd=frontend_dir, check=True)
-
 print("▶ Building React app (takes ~60s on first run)...")
-build_env = {
-    **os.environ,
-    "CI": "false",
-    "GENERATE_SOURCEMAP": "false",
-    "NODE_OPTIONS": os.environ.get("NODE_OPTIONS", "--max_old_space_size=4096"),
-}
-try:
-    subprocess.run(
-        ["npm", "run", "build"],
-        cwd=frontend_dir, check=True,
-        env=build_env,   # don't treat warnings as errors; reduce memory usage
-    )
-except subprocess.CalledProcessError:
-    # First retry: clear npm cache and retry build with same install.
-    print("⚠ npm build failed; retrying with cache clean...")
-    subprocess.run(["npm", "cache", "clean", "--force"], cwd=frontend_dir, check=False)
-    try:
-        subprocess.run(
-            ["npm", "run", "build"],
-            cwd=frontend_dir, check=True,
-            env=build_env,
-        )
-    except subprocess.CalledProcessError:
-        # Colab can keep stale/incompatible node_modules around between sessions.
-        print("⚠ npm build still failing; retrying after clean install...")
-        shutil.rmtree(os.path.join(frontend_dir, "node_modules"), ignore_errors=True)
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
-        subprocess.run(
-            ["npm", "install", "--legacy-peer-deps"],
-            cwd=frontend_dir, check=True,
-        )
-        subprocess.run(
-            ["npm", "run", "build"],
-            cwd=frontend_dir, check=True,
-            env=build_env,
-        )
-print("✓ React build complete.")
+built = try_frontend_build()
+if built:
+    print("✓ React build complete.")
+else:
+    print("⚠ React build failed after retries. Continuing with FastAPI fallback UI.")
 
-# ── 3. Start FastAPI (API + React static) on port 8000 ───────────
+# 3) Start FastAPI
 print("▶ Starting FastAPI server…")
 subprocess.Popen(
-    [sys.executable, "-m", "uvicorn",
-     "backend.server:app",
-     "--host", "0.0.0.0",
-     "--port", "8000",
-     "--log-level", "warning"],
+    [
+        sys.executable, "-m", "uvicorn",
+        "backend.server:app",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--log-level", "warning",
+    ],
     cwd=ROOT,
     env={
         **os.environ,
@@ -86,7 +91,7 @@ subprocess.Popen(
 )
 time.sleep(4)
 
-# ── 4. Open LocalTunnel ───────────────────────────────────────────
+# 4) Tunnel
 ip = urllib.request.urlopen("https://ipv4.icanhazip.com").read().decode().strip()
 print()
 print("=" * 55)

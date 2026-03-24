@@ -108,3 +108,11 @@ This audit focuses on current implementation behavior vs. stated goals:
 2. **Batch passage execution where possible** to reduce IPC overhead and improve reproducibility of training timing.
 
 Bottom line: the project has a real symbolic core and runnable stack, but current demonstrations still over-index on pipeline viability and under-index on validated semantic capability. The next gains should come from truthful metrics + persistence + capability-aligned evals.
+
+## Implemented corrections since this audit
+
+- Dataset is explicit in training config/state/UI and pinned to C4 in backend runtime handling.
+- Graph growth chart is labeled as an estimate to avoid false precision.
+- Bitmask context routing helpers are implemented (`ArgNode` + LCS helpers) for O(1) subset checks.
+- Condensed path provenance is retained and can be expanded from canonical shortcut IDs.
+- Colab launch no longer aborts outright on repeated React build failure; backend serves fallback UI for continued training/inference access.

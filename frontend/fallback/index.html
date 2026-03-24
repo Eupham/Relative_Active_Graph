@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Engine Fallback UI</title>
+  <style>
+    body { margin:0; font-family: Inter, system-ui, sans-serif; background:#111827; color:#e5e7eb; }
+    .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    .card { background:#1f2937; border:1px solid #374151; border-radius:12px; padding:16px; margin-bottom:16px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    input, select, textarea, button { background:#111827; color:#e5e7eb; border:1px solid #4b5563; border-radius:8px; padding:8px; }
+    textarea { width:100%; min-height:110px; }
+    button { cursor:pointer; }
+    pre { white-space:pre-wrap; background:#0b1220; border-radius:8px; padding:10px; border:1px solid #374151; }
+    .muted { color:#9ca3af; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>RAG Engine (Fallback UI)</h2>
+    <p class="muted">React build failed in runtime, so this fallback UI is served directly by FastAPI. You can still train on C4 and run inference.</p>
+
+    <div class="card">
+      <h3>Training (C4)</h3>
+      <div class="row">
+        <select id="lang">
+          <option value="en">EN</option><option value="de">DE</option><option value="fr">FR</option>
+          <option value="es">ES</option><option value="zh">ZH</option>
+        </select>
+        <input id="epochs" type="number" value="1" min="1" />
+        <input id="maxs" type="number" value="1000" min="10" />
+        <input id="pch" type="number" value="2000" min="500" />
+        <button onclick="startTrain()">Start Training</button>
+        <button onclick="stopTrain()">Stop</button>
+      </div>
+      <pre id="status">Loading status...</pre>
+    </div>
+
+    <div class="card">
+      <h3>Inference</h3>
+      <textarea id="prompt" placeholder="Enter seed text"></textarea>
+      <div class="row">
+        <button onclick="infer()">Generate</button>
+      </div>
+      <pre id="out"></pre>
+    </div>
+  </div>
+  <script>
+    async function refresh() {
+      const r = await fetch('/api/training/status'); const j = await r.json();
+      document.getElementById('status').textContent = JSON.stringify(j, null, 2);
+    }
+    async function startTrain() {
+      await fetch('/api/training/start', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          dataset:'c4',
+          language: document.getElementById('lang').value,
+          epochs: Number(document.getElementById('epochs').value),
+          max_sentences: Number(document.getElementById('maxs').value),
+          passage_chars: Number(document.getElementById('pch').value),
+        })
+      });
+      refresh();
+    }
+    async function stopTrain() { await fetch('/api/training/stop', {method:'POST'}); refresh(); }
+    async function infer() {
+      const seed_text = document.getElementById('prompt').value;
+      const r = await fetch('/api/inference/generate', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ seed_text, language:'en' })
+      });
+      document.getElementById('out').textContent = JSON.stringify(await r.json(), null, 2);
+    }
+    setInterval(refresh, 3000); refresh();
+  </script>
+</body>
+</html>
