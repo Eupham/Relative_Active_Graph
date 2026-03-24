@@ -22,6 +22,15 @@ pub fn stable_node_id(lemma: &str) -> u64 {
     fnv1a_64_bytes(lemma.as_bytes())
 }
 
+/// Context-free identity for a token structure.
+/// This is the base e-class-like identity (morphological fingerprint only).
+pub fn base_node_id_from_structure(s: &TokenStructure) -> u64 {
+    let mut b = [0u8; 8];
+    b[0..4].copy_from_slice(&s.suffix3_hash.to_le_bytes());
+    b[4..8].copy_from_slice(&s.prefix2_hash.to_le_bytes());
+    fnv1a_64_bytes(&b)
+}
+
 /// Map ModalMode to a single byte for hashing.
 pub fn mode_to_u8(mode: ModalMode) -> u8 {
     match mode {
@@ -29,6 +38,24 @@ pub fn mode_to_u8(mode: ModalMode) -> u8 {
         ModalMode::Box      => 1,
         ModalMode::Lozenge  => 2,
     }
+}
+
+/// Compose a contextual NodeId from a context-free base identity and context mask.
+///
+/// Layout hashed (all little-endian, 17 bytes total):
+///   [base_node_id u64] [env u64] [mode_byte u8]
+pub fn contextual_node_id_from_base(base_node_id: u64, env: u64, mode: ModalMode) -> u64 {
+    let mut b = [0u8; 17];
+    b[0..8].copy_from_slice(&base_node_id.to_le_bytes());
+    b[8..16].copy_from_slice(&env.to_le_bytes());
+    b[16] = mode_to_u8(mode);
+    fnv1a_64_bytes(&b)
+}
+
+/// True when `node_env` contains every bit in `query_mask`.
+#[inline]
+pub fn context_mask_matches(node_env: u64, query_mask: u64) -> bool {
+    (node_env & query_mask) == query_mask
 }
 
 /// Context-aware 64-bit node identity spanning the external character graph
@@ -238,6 +265,12 @@ mod tests {
         let a = contextual_node_id(&make_structure(100, 200), 0, ModalMode::Diamond);
         let b = contextual_node_id(&make_structure(999, 200), 0, ModalMode::Diamond);
         assert_ne!(a, b, "different suffix3 must produce different id");
+    }
+
+    #[test]
+    fn context_mask_matches_subset() {
+        assert!(context_mask_matches(0b10110, 0b00110));
+        assert!(!context_mask_matches(0b10110, 0b11000));
     }
 
     #[test]

@@ -343,6 +343,25 @@ impl Engine {
             });
         } else {
             self.graphica.record_traversal(&cache_key);
+            // Opportunistically condense the strongest traversed edge into a shortcut.
+            // Provenance is preserved via GraphicaCache::expand_shortcut(canonical_id).
+            if let Some((ei, e)) = search.graph.edge_indices()
+                .map(|ei| (ei, &search.graph[ei]))
+                .max_by(|a, b| a.1.weight.partial_cmp(&b.1.weight).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                let next_edge_id = search.graph.edge_indices()
+                    .map(|idx| search.graph[idx].id)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                if let Some(sc) = self.graphica.try_emit_shortcut(
+                    &cache_key, e.src, e.dst, e.modal_mode, &[e.weight], &[e.id], next_edge_id,
+                ) {
+                    if let Some((src_idx, dst_idx)) = search.graph.edge_endpoints(ei) {
+                        search.graph.add_edge(src_idx, dst_idx, sc);
+                    }
+                }
+            }
         }
 
         // Apply Ruler type normalizations

@@ -55,6 +55,13 @@ impl ArgNode {
             && self.attribution_score as f64 > theta
     }
 
+    /// O(1) context routing helper:
+    /// returns true iff all bits in `query_mask` are active in this node's ATMS label.
+    #[inline]
+    pub fn matches_context_mask(&self, query_mask: Env) -> bool {
+        (self.atms_label & query_mask) == query_mask
+    }
+
     pub fn surface_str(&self) -> Option<&str> {
         self.surface.as_deref().and_then(|b| std::str::from_utf8(b).ok())
     }
@@ -85,5 +92,13 @@ mod tests {
         assert!(n.is_active(0b011, 0.5));
         // 0b001 does not contain 0b010, so not a superset
         assert!(!n.is_active(0b001, 0.5));
+    }
+
+    #[test]
+    fn context_mask_match_uses_bitwise_subset() {
+        let mut n = ArgNode::new(2, NodeClass::DEFAULT, ModalType::default(), (0, 0));
+        n.atms_label = 0b10110;
+        assert!(n.matches_context_mask(0b00110));
+        assert!(!n.matches_context_mask(0b11000));
     }
 }
