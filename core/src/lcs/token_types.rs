@@ -2,6 +2,7 @@
 //! All structural meaning is learned through teacher forcing.
 
 use std::collections::BTreeSet;
+use crate::types::ModalMode;
 
 pub fn fnv_hash(s: &str) -> u32 {
     const OFFSET: u32 = 0x811c_9dc5;
@@ -19,6 +20,52 @@ pub fn fnv1a_64_bytes(bytes: &[u8]) -> u64 {
 
 pub fn stable_node_id(lemma: &str) -> u64 {
     fnv1a_64_bytes(lemma.as_bytes())
+}
+
+/// Map ModalMode to a single byte for hashing.
+pub fn mode_to_u8(mode: ModalMode) -> u8 {
+    match mode {
+        ModalMode::Diamond  => 0,
+        ModalMode::Box      => 1,
+        ModalMode::Lozenge  => 2,
+    }
+}
+
+/// Context-aware 64-bit node identity spanning the external character graph
+/// and the internal ARG hypergraph.
+///
+/// Layout hashed (all little-endian, 17 bytes total):
+///   [suffix3_hash u32] [prefix2_hash u32] [env u64] [mode_byte u8]
+///
+/// Two tokens with the same morphological shape (suffix3+prefix2)
+/// are treated as the same external-graph class, but separate internal
+/// states (different Env bitmasks or ModalMode roles) produce distinct
+/// NodeIds — bridge between external context and internal hypergraph.
+///
+/// Python parity: `contextual_node_id` in `lcs/induction/tokenizer.py`
+/// must produce identical results from the same byte sequence.
+pub fn contextual_node_id(s: &TokenStructure, env: u64, mode: ModalMode) -> u64 {
+    let mut b = [0u8; 17];
+    b[0..4].copy_from_slice(&s.suffix3_hash.to_le_bytes());
+    b[4..8].copy_from_slice(&s.prefix2_hash.to_le_bytes());
+    b[8..16].copy_from_slice(&env.to_le_bytes());
+    b[16] = mode_to_u8(mode);
+    fnv1a_64_bytes(&b)
+}
+
+/// Infer ModalMode from structural features of the external character graph.
+///
+/// - `Box` (□): repeated tokens — structural contraction, shared sub-graph node
+/// - `Lozenge` (◊): mid-to-late non-boundary position — potential displacement
+/// - `Diamond` (◇): boundary or early position — primary linear composition
+pub fn infer_modal_mode(s: &TokenStructure) -> ModalMode {
+    if s.is_repeated {
+        ModalMode::Box        // shared/contraction: same surface recurs
+    } else if s.normalized_position > 0.5 && !s.is_last_token {
+        ModalMode::Lozenge    // mid-to-late non-boundary: potential displacement
+    } else {
+        ModalMode::Diamond    // boundary or early: primary composition
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -148,5 +195,69 @@ mod tests {
     fn stable_node_id_deterministic() {
         assert_eq!(stable_node_id("alice"), stable_node_id("alice"));
         assert_ne!(stable_node_id("alice"), stable_node_id("runs"));
+    }
+
+    fn make_structure(suffix3: u32, prefix2: u32) -> TokenStructure {
+        TokenStructure {
+            token_id: 1, is_first_token: false, is_last_token: false,
+            normalized_position: 0.3, sentence_length_norm: 0.5,
+            starts_with_uppercase: false, is_punctuation: false,
+            is_repeated: false, char_length_norm: 0.2,
+            prefix2_hash: prefix2, suffix3_hash: suffix3,
+            suffix2_hash: 0, prev_lemma_hash: 0, next_lemma_hash: 0,
+            n_context_neighbors: 0, char_trigram_hashes: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn contextual_node_id_deterministic() {
+        let s = make_structure(100, 200);
+        let a = contextual_node_id(&s, 1, ModalMode::Diamond);
+        let b = contextual_node_id(&s, 1, ModalMode::Diamond);
+        assert_eq!(a, b, "same inputs must produce same id");
+    }
+
+    #[test]
+    fn contextual_node_id_env_distinguishes() {
+        let s = make_structure(100, 200);
+        let a = contextual_node_id(&s, 1, ModalMode::Diamond);
+        let b = contextual_node_id(&s, 2, ModalMode::Diamond);
+        assert_ne!(a, b, "different env must produce different id");
+    }
+
+    #[test]
+    fn contextual_node_id_mode_distinguishes() {
+        let s = make_structure(100, 200);
+        let a = contextual_node_id(&s, 1, ModalMode::Diamond);
+        let b = contextual_node_id(&s, 1, ModalMode::Box);
+        assert_ne!(a, b, "different mode must produce different id");
+    }
+
+    #[test]
+    fn contextual_node_id_structure_change() {
+        let a = contextual_node_id(&make_structure(100, 200), 0, ModalMode::Diamond);
+        let b = contextual_node_id(&make_structure(999, 200), 0, ModalMode::Diamond);
+        assert_ne!(a, b, "different suffix3 must produce different id");
+    }
+
+    #[test]
+    fn infer_modal_mode_repeated_is_box() {
+        let mut s = make_structure(0, 0);
+        s.is_repeated = true;
+        assert_eq!(infer_modal_mode(&s), ModalMode::Box);
+    }
+
+    #[test]
+    fn infer_modal_mode_late_position_is_lozenge() {
+        let mut s = make_structure(0, 0);
+        s.normalized_position = 0.7;
+        s.is_last_token = false;
+        assert_eq!(infer_modal_mode(&s), ModalMode::Lozenge);
+    }
+
+    #[test]
+    fn infer_modal_mode_boundary_is_diamond() {
+        let s = make_structure(0, 0);
+        assert_eq!(infer_modal_mode(&s), ModalMode::Diamond);
     }
 }

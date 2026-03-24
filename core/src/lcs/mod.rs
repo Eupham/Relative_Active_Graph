@@ -6,7 +6,7 @@ pub mod converter;
 pub mod category_registry;
 pub mod bootstrap_loader;
 
-pub use token_types::{Token, TokenSentence, TokenStructure, fnv_hash, fnv1a_64_bytes, stable_node_id, extract_features};
+pub use token_types::{Token, TokenSentence, TokenStructure, fnv_hash, fnv1a_64_bytes, stable_node_id, extract_features, contextual_node_id, mode_to_u8, infer_modal_mode};
 pub use converter::{
     MtlgNode, MtlgEdge, MtlgGraph,
     CategoryInducer,

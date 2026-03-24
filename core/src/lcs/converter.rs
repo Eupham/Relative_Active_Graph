@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 use crate::types::{TypeCategory, ModalMode, ModalType, Direction, NodeId};
 use crate::arg::{ArgNode, ArgEdge, NodeClass, EdgeClass};
-use super::token_types::{TokenSentence, TokenStructure, extract_features, fnv1a_64_bytes};
+use super::token_types::{TokenSentence, TokenStructure, extract_features, fnv1a_64_bytes, contextual_node_id, infer_modal_mode};
 
 // ── Feature vector (kept for compatibility) ───────────────────────────────────
 
@@ -299,6 +299,9 @@ pub fn sentence_to_mtlg(sentence: &TokenSentence, mut inducer: Option<&mut Categ
     let mut nodes = Vec::new();
     for tok in &sentence.tokens {
         let structure = extract_features(tok, sentence);
+        // Infer ModalMode from the external character graph's structural signals.
+        // Box = shared/contraction (repeated), Lozenge = displacement (late), Diamond = primary.
+        let modal_mode = infer_modal_mode(&structure);
         let ucca_cat = if let Some(ref mut ind) = inducer {
             let node_id = stable_node_id_from_structure(&structure);
             let leaf = structure.is_punctuation || structure.char_length_norm < 0.1;
@@ -310,7 +313,7 @@ pub fn sentence_to_mtlg(sentence: &TokenSentence, mut inducer: Option<&mut Categ
         if ucca_cat.is_none() { deferred.push(structure.clone()); }
         nodes.push(MtlgNode {
             token_id: tok.id, text: tok.text.clone(), lemma: tok.lemma.clone(),
-            modal_mode: ModalMode::Diamond, ucca_cat, arity: 0, structure,
+            modal_mode, ucca_cat, arity: 0, structure,
         });
     }
     let edges = (0..sentence.tokens.len().saturating_sub(1)).map(|i| {
@@ -354,7 +357,10 @@ impl MtlgGraph {
             } else {
                 ModalType::atom(n.modal_mode, cat)
             };
-            let mut node = ArgNode::new(n.token_id as u64, NodeClass::DEFAULT, mt, (situation_id, 0));
+            // Use contextual_node_id: morphological fingerprint + env=0 (pre-ATMS) + inferred mode.
+            // This replaces the broken `token_id as u64` which was just a position index.
+            let nid = contextual_node_id(&n.structure, 0, n.modal_mode);
+            let mut node = ArgNode::new(nid, NodeClass::DEFAULT, mt, (situation_id, 0));
             node.surface     = Some(n.text.as_bytes().to_vec());
             node.atms_label  = atms_label;
             node.attribution_score = 0.5;

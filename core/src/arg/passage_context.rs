@@ -101,11 +101,16 @@ impl PassageContext {
         }
 
         // Sequential edge from previous token to this token.
+        // Use the destination node's ModalMode so contraction edges (Box) form
+        // between repeated tokens, enabling hypergraph substructure.
         if let Some(prev) = prev_node_id {
             let seq_id = sequential_edge_id(prev, expected_node_id);
+            let dst_mode = self.node_map.get(&expected_node_id)
+                .map(|n| n.mtlg_type.mode)
+                .unwrap_or(ModalMode::Diamond);
             let seq_edge = ArgEdge::new(
                 seq_id, prev, expected_node_id,
-                EdgeClass::SEQUENTIAL, ModalMode::Diamond,
+                EdgeClass::SEQUENTIAL, dst_mode,
             );
             self.edge_map.entry(seq_id).or_insert(seq_edge);
         }
@@ -202,12 +207,15 @@ impl PassageContext {
             node.attribution_score = f32::NEG_INFINITY;
         }
 
-        // Sequential edge: same logic as training.
+        // Sequential edge: same logic as training — use destination node's mode.
         if let Some(prev) = prev_node_id {
             let seq_id = sequential_edge_id(prev, predicted_id);
+            let dst_mode = self.node_map.get(&predicted_id)
+                .map(|n| n.mtlg_type.mode)
+                .unwrap_or(ModalMode::Diamond);
             let seq_edge = ArgEdge::new(
                 seq_id, prev, predicted_id,
-                EdgeClass::SEQUENTIAL, ModalMode::Diamond,
+                EdgeClass::SEQUENTIAL, dst_mode,
             );
             self.edge_map.entry(seq_id).or_insert(seq_edge);
         }
