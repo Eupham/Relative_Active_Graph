@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Zap } from 'lucide-react';
+import { Send } from 'lucide-react';
 
 function UserMessage({ msg }) {
   return (
@@ -115,14 +115,15 @@ export default function ChatPane({ session, apiUrl, onMessage }) {
   // Auto-resize textarea
   const handleInput = (e) => {
     setInput(e.target.value);
-    const ta = textareaRef.current;
-    if (ta) {
-      ta.style.height = 'auto';
-      ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    // Auto-resize
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height =
+        Math.min(textareaRef.current.scrollHeight, 160) + 'px';
     }
   };
 
-  const messages = session?.messages || [];
+  const messages = (session && Array.isArray(session.messages)) ? session.messages : [];
   const canSend = input.trim().length > 0 && !loading;
 
   return (
@@ -131,10 +132,11 @@ export default function ChatPane({ session, apiUrl, onMessage }) {
         {messages.length === 0 && !loading ? (
           <div className="chat-empty">
             <div className="chat-empty-icon">⚛</div>
-            <h3>Symbolic Inference</h3>
+            <h3>RAG Engine</h3>
             <p>
-              Send a seed phrase to traverse the engine's ARG and generate
-              a formally grounded response. Train the model first for richer output.
+              Type any word or sentence. The engine will traverse its learned
+              symbolic graph and generate a response. Train the model first
+              for richer, more grounded output.
             </p>
           </div>
         ) : (
@@ -154,7 +156,7 @@ export default function ChatPane({ session, apiUrl, onMessage }) {
             ref={textareaRef}
             className="chat-textarea"
             rows={1}
-            placeholder="Enter a seed concept or sentence…"
+            placeholder="Send a message…"
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
@@ -169,7 +171,7 @@ export default function ChatPane({ session, apiUrl, onMessage }) {
           </button>
         </div>
         <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-          Enter to send · Shift+Enter for new line
+          Enter ↵ to send &nbsp;·&nbsp; Shift+Enter for new line
         </div>
       </div>
     </div>

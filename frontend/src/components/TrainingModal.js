@@ -31,17 +31,16 @@ export default function TrainingModal({ apiUrl, trainingState: ts, onClose }) {
 
   const isRunning = ts?.running === true;
 
-  // Build chart data by merging quality_history with graph snapshots
-  const qualityHistory = ts?.quality_history || [];
+  // Safely access history arrays (ts may be null on first load)
+  const qualityHistory = (ts?.quality_history) ?? [];
 
-  // Graph history: snapshot each passage point with cumulative node/edge counts
-  // We rebuild this by tagging quality_history entries with global_nodes/edges
-  // (server only sends latest counts, so we approximate growth from the history array)
+  // Approximate graph growth over passages from cumulative totals
+  const totalNodes = ts?.global_nodes ?? 0;
+  const totalEdges = ts?.global_edges ?? 0;
   const graphHistory = qualityHistory.map((pt, i) => ({
     passage: pt.passage,
-    // Linearly interpolate node/edge growth up to current totals as best approximation
-    nodes: Math.round(((i + 1) / qualityHistory.length) * (ts?.global_nodes || 0)),
-    edges: Math.round(((i + 1) / qualityHistory.length) * (ts?.global_edges || 0)),
+    nodes: Math.round(((i + 1) / Math.max(qualityHistory.length, 1)) * totalNodes),
+    edges: Math.round(((i + 1) / Math.max(qualityHistory.length, 1)) * totalEdges),
   }));
 
   const handleStart = async () => {
