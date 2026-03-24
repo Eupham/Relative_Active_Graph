@@ -31,7 +31,10 @@ Full DAWG integration is larger than this patch, but current e-graph + memo infr
 Implemented:
 - `GraphicaCache` now stores `canonical_id -> constituent edge IDs` for emitted shortcuts.
 - Added `expand_shortcut(canonical_id)` to recover the original path edge IDs.
-- Engine integration now opportunistically emits a shortcut edge from high-weight traversals, so condensed-path provenance is not dead code.
+- Engine integration now performs **threshold-gated path triangulation** (A→B→C ⇒ A→C) using:
+  - high-weight pair selection,
+  - modal-mode consistency checks,
+  - variance-aware crystallization threshold from `PerfRegistry`.
 
 This preserves explainability/provenance for condensed traversal paths while keeping fast shortcut traversal.
 
@@ -43,5 +46,5 @@ This preserves explainability/provenance for condensed traversal paths while kee
 ## Concrete follow-through added in this patch
 
 1. **Bitmask query primitive is now operational** in ARG node logic and available in LCS helpers.
-2. **Condensed-path provenance is now exercised by engine execution path**, not only tests.
+2. **Condensed-path provenance is now exercised by engine execution path** via path triangulation, not only tests.
 3. **Colab notebook flow now hard-fails less often**: after repeated npm build failures, the launcher continues and backend serves a fallback UI so training/inference can still be run.

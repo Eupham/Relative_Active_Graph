@@ -115,4 +115,5 @@ Bottom line: the project has a real symbolic core and runnable stack, but curren
 - Graph growth chart is labeled as an estimate to avoid false precision.
 - Bitmask context routing helpers are implemented (`ArgNode` + LCS helpers) for O(1) subset checks.
 - Condensed path provenance is retained and can be expanded from canonical shortcut IDs.
+- Engine-side condensation now uses variance-gated A→B→C triangulation rather than single-edge duplication.
 - Colab launch no longer aborts outright on repeated React build failure; backend serves fallback UI for continued training/inference access.

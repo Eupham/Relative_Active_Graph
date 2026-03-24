@@ -343,21 +343,57 @@ impl Engine {
             });
         } else {
             self.graphica.record_traversal(&cache_key);
-            // Opportunistically condense the strongest traversed edge into a shortcut.
-            // Provenance is preserved via GraphicaCache::expand_shortcut(canonical_id).
-            if let Some((ei, e)) = search.graph.edge_indices()
-                .map(|ei| (ei, &search.graph[ei]))
-                .max_by(|a, b| a.1.weight.partial_cmp(&b.1.weight).unwrap_or(std::cmp::Ordering::Equal))
-            {
+            // Threshold-gated path triangulation: condense A→B→C into A→C only when
+            // both edges are high-confidence and variance regime permits crystallization.
+            let trd_for_gate = trd.unwrap_or(0);
+            let var_ratio = self.perf.variance_ratio(trd_for_gate) as f32;
+            let crystallization_threshold = (0.70 + (1.0 - var_ratio) * 0.20).clamp(0.70, 0.90);
+
+            let mut best_path: Option<(NodeId, NodeId, ModalMode, Vec<f32>, Vec<EdgeId>)> = None;
+            let mut max_joint_weight = 0.0f32;
+
+            for edge_a_idx in search.graph.edge_indices() {
+                let edge_a = &search.graph[edge_a_idx];
+                if edge_a.weight < crystallization_threshold {
+                    continue;
+                }
+                let Some((_, b_idx)) = search.graph.edge_endpoints(edge_a_idx) else {
+                    continue;
+                };
+                for edge_b_ref in search.graph.edges_directed(b_idx, petgraph::Direction::Outgoing) {
+                    let edge_b = edge_b_ref.weight();
+                    if edge_b.weight < crystallization_threshold {
+                        continue;
+                    }
+                    if edge_a.modal_mode != edge_b.modal_mode {
+                        continue; // context purity across condensed path
+                    }
+                    let joint_weight = edge_a.weight * edge_b.weight;
+                    if joint_weight > max_joint_weight {
+                        max_joint_weight = joint_weight;
+                        best_path = Some((
+                            edge_a.src,
+                            edge_b.dst,
+                            edge_a.modal_mode,
+                            vec![edge_a.weight, edge_b.weight],
+                            vec![edge_a.id, edge_b.id],
+                        ));
+                    }
+                }
+            }
+
+            if let Some((src, dst, mode, weights, ids)) = best_path {
                 let next_edge_id = search.graph.edge_indices()
                     .map(|idx| search.graph[idx].id)
                     .max()
                     .unwrap_or(0)
                     .saturating_add(1);
                 if let Some(sc) = self.graphica.try_emit_shortcut(
-                    &cache_key, e.src, e.dst, e.modal_mode, &[e.weight], &[e.id], next_edge_id,
+                    &cache_key, src, dst, mode, &weights, &ids, next_edge_id,
                 ) {
-                    if let Some((src_idx, dst_idx)) = search.graph.edge_endpoints(ei) {
+                    let src_idx = search.graph.node_indices().find(|&ni| search.graph[ni].id == src);
+                    let dst_idx = search.graph.node_indices().find(|&ni| search.graph[ni].id == dst);
+                    if let (Some(src_idx), Some(dst_idx)) = (src_idx, dst_idx) {
                         search.graph.add_edge(src_idx, dst_idx, sc);
                     }
                 }
