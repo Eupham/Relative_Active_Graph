@@ -16,8 +16,26 @@ pip install -q fastapi uvicorn[standard] python-multipart
 # 2. Build React frontend
 echo "▶ Building React frontend..."
 cd frontend
-npm install --legacy-peer-deps --silent
-npm run build
+echo "▶ Node/NPM versions:"
+node --version
+npm --version
+
+if [ -f package-lock.json ]; then
+  npm ci --legacy-peer-deps
+else
+  npm install --legacy-peer-deps
+fi
+
+if ! CI=false GENERATE_SOURCEMAP=false NODE_OPTIONS=${NODE_OPTIONS:---max_old_space_size=4096} npm run build; then
+  echo "⚠ First frontend build failed; retrying after npm cache clean..."
+  npm cache clean --force || true
+fi
+if ! CI=false GENERATE_SOURCEMAP=false NODE_OPTIONS=${NODE_OPTIONS:---max_old_space_size=4096} npm run build; then
+  echo "⚠ Second frontend build failed; retrying after clean install..."
+  rm -rf node_modules package-lock.json
+  npm install --legacy-peer-deps
+  CI=false GENERATE_SOURCEMAP=false NODE_OPTIONS=${NODE_OPTIONS:---max_old_space_size=4096} npm run build
+fi
 cd ..
 echo "✓ React build complete."
 

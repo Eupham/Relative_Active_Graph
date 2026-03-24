@@ -22,6 +22,7 @@ function formatNum(n) {
 
 export default function TrainingModal({ apiUrl, trainingState: ts, onClose }) {
   const [config, setConfig] = useState({
+    dataset: 'c4',
     language: 'en',
     epochs: 1,
     max_sentences: 1000,
@@ -50,6 +51,7 @@ export default function TrainingModal({ apiUrl, trainingState: ts, onClose }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          dataset: config.dataset,
           language: config.language,
           epochs: Number(config.epochs),
           max_sentences: Number(config.max_sentences),
@@ -98,6 +100,17 @@ export default function TrainingModal({ apiUrl, trainingState: ts, onClose }) {
           {/* Config */}
           <div>
             <div className="config-grid">
+              <div className="form-field">
+                <label className="form-label">Dataset</label>
+                <select
+                  className="form-input"
+                  value={config.dataset}
+                  onChange={e => setConfig(c => ({...c, dataset: e.target.value}))}
+                  disabled={isRunning}
+                >
+                  <option value="c4">C4 (streaming)</option>
+                </select>
+              </div>
               <div className="form-field">
                 <label className="form-label">Language</label>
                 <select
@@ -163,6 +176,11 @@ export default function TrainingModal({ apiUrl, trainingState: ts, onClose }) {
 
           {/* Live Stats */}
           <div className="stats-bar">
+            <div className="stat-card">
+              <div className="stat-label">Dataset</div>
+              <div className="stat-value">{(ts?.dataset || config.dataset || 'c4').toUpperCase()}</div>
+              <div className="stat-sub">training source</div>
+            </div>
             <div className="stat-card">
               <div className="stat-label">Passages</div>
               <div className="stat-value">{formatNum(ts?.passages)}</div>

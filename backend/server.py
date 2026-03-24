@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -31,10 +32,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/")
 def root():
+    build_index = Path(__file__).parent.parent / "frontend" / "build" / "index.html"
+    if build_index.exists():
+        return FileResponse(str(build_index))
     return {
-        "message": "Welcome to the CSRRE Training Dashboard API. The frontend is running on port 3000.",
+        "message": "CSRRE backend online. Frontend build not found; run `npm run build` in frontend/.",
         "status": "online",
-        "docs_url": "/docs"
+        "docs_url": "/docs",
     }
 
 RUST_BINARY = Path(os.environ.get("RUST_BINARY", "/app/target/release/csrre"))
@@ -111,6 +115,7 @@ class TrainingState:
     elapsed_sec: float = 0.0
     max_sentences: int = 1000
     language: str = "en"
+    dataset: str = "c4"
     error: str = ""
 
     def to_dict(self):
@@ -131,6 +136,7 @@ class TrainingState:
             "elapsed_sec": round(self.elapsed_sec, 1),
             "max_sentences": self.max_sentences,
             "language": self.language,
+            "dataset": self.dataset,
             "error": self.error,
         }
 
@@ -175,6 +181,9 @@ def _run_training(config: dict):
     poisson_ctrl = AdaptivePoissonController()
     
     language = config.get("language", "en")
+    dataset = (config.get("dataset", "c4") or "c4").lower()
+    if dataset != "c4":
+        dataset = "c4"
     epochs = config.get("epochs", 1)
     max_sentences = config.get("max_sentences", 1000)
     passage_chars = config.get("passage_chars", 2000)
@@ -182,6 +191,7 @@ def _run_training(config: dict):
     training_state.total_epochs = epochs
     training_state.max_sentences = max_sentences
     training_state.language = language
+    training_state.dataset = dataset
     
     start_time = time.time()
     
@@ -203,7 +213,7 @@ def _run_training(config: dict):
         _emit_event("info", f"Starting engine: {binary}")
         
         with RustBridge(binary=binary) as bridge:
-            _emit_event("info", f"Engine started. Training {language} — {epochs} epoch(s), max {max_sentences} sentences")
+            _emit_event("info", f"Engine started. Training {language} on {dataset.upper()} — {epochs} epoch(s), max {max_sentences} sentences")
             
             for epoch in range(epochs):
                 if _stop_event.is_set():
@@ -378,6 +388,7 @@ def _emit_event(level: str, message: str):
 # ── Pydantic Models ───────────────────────────────────────────────────────────
 
 class TrainConfig(BaseModel):
+    dataset: str = "c4"
     language: str = "en"
     epochs: int = 1
     max_sentences: int = 1000
