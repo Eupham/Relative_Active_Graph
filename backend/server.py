@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -31,10 +32,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/")
 def root():
+    build_index = Path(__file__).parent.parent / "frontend" / "build" / "index.html"
+    if build_index.exists():
+        return FileResponse(str(build_index))
     return {
-        "message": "Welcome to the CSRRE Training Dashboard API. The frontend is running on port 3000.",
+        "message": "CSRRE backend online. Frontend build not found; run `npm run build` in frontend/.",
         "status": "online",
-        "docs_url": "/docs"
+        "docs_url": "/docs",
     }
 
 RUST_BINARY = Path(os.environ.get("RUST_BINARY", "/app/target/release/csrre"))
