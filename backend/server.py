@@ -216,17 +216,7 @@ def _run_training(config: dict):
                 passage_buffer = []
                 passage_char_count = 0
                 
-                def _stable_node_id(lemma: str) -> int:
-                    h = 0xcbf29ce484222325
-                    for b in lemma.encode():
-                        h = ((h ^ b) * 0x00000100000001b3) & 0xFFFFFFFFFFFFFFFF
-                    return h
-                
-                def _fnv_hash(s: str) -> int:
-                    h = 0x811c9dc5
-                    for b in s.encode():
-                        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
-                    return h
+                from tokenizer import _stable_node_id, _fnv_hash, contextual_node_id, infer_modal_mode
                 
                 def flush_passage():
                     nonlocal passage_char_count
@@ -237,27 +227,64 @@ def _run_training(config: dict):
                     for seq in passage_buffer:
                         nodes = []
                         for s in seq.steps:
+                            # Infer ModalMode from structural features
+                            n_toks = len(seq.steps)
+                            pos_idx = seq.steps.index(s)
+                            is_first = (pos_idx == 0)
+                            is_last = (pos_idx == n_toks - 1)
+                            norm_pos = pos_idx / max(n_toks - 1, 1)
+                            is_repeated = sum(1 for x in seq.steps if x.lemma == s.lemma) > 1
+                            mode_int = infer_modal_mode(is_repeated, norm_pos, is_last)
+                            mode_str = ["diamond", "box", "lozenge"][mode_int]
+                            
+                            # Use contextual_node_id for IPC parity with Rust
+                            nid = contextual_node_id(s.suffix3_hash, s.prefix2_hash, 0, mode_int)
+                            
                             nodes.append(bridge.make_node(
-                                node_id=_stable_node_id(s.lemma),
+                                node_id=nid,
                                 surface=s.text,
                                 score=0.5,
                                 deprel_hash=s.suffix3_hash,
                                 upos_hash=s.prefix2_hash,
                                 arity=0,
-                                mode="diamond",
+                                mode=mode_str,
                                 cat=0,
                             ))
                         edges = [
                             bridge.make_edge(
                                 edge_id=(i + 1),
-                                src=_stable_node_id(seq.steps[i].lemma),
-                                dst=_stable_node_id(seq.steps[i + 1].lemma),
+                                src=contextual_node_id(
+                                    seq.steps[i].suffix3_hash, seq.steps[i].prefix2_hash,
+                                    0, infer_modal_mode(
+                                        sum(1 for x in seq.steps if x.lemma == seq.steps[i].lemma) > 1,
+                                        i / max(len(seq.steps) - 1, 1),
+                                        i == len(seq.steps) - 1,
+                                    )
+                                ),
+                                dst=contextual_node_id(
+                                    seq.steps[i + 1].suffix3_hash, seq.steps[i + 1].prefix2_hash,
+                                    0, infer_modal_mode(
+                                        sum(1 for x in seq.steps if x.lemma == seq.steps[i + 1].lemma) > 1,
+                                        (i + 1) / max(len(seq.steps) - 1, 1),
+                                        (i + 1) == len(seq.steps) - 1,
+                                    )
+                                ),
                             )
                             for i in range(len(seq.steps) - 1)
                         ]
+                        # Build step IDs with contextual hashing
+                        step_ids = []
+                        for idx_s, s in enumerate(seq.steps):
+                            is_rep = sum(1 for x in seq.steps if x.lemma == s.lemma) > 1
+                            npos = idx_s / max(len(seq.steps) - 1, 1)
+                            is_lst = idx_s == len(seq.steps) - 1
+                            step_ids.append(contextual_node_id(
+                                s.suffix3_hash, s.prefix2_hash, 0,
+                                infer_modal_mode(is_rep, npos, is_lst)
+                            ))
                         wire_sentences.append({
                             "nodes": nodes, "edges": edges,
-                            "steps": [_stable_node_id(s.lemma) for s in seq.steps],
+                            "steps": step_ids,
                         })
                     
                     # Register lexicon
