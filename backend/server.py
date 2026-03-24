@@ -535,3 +535,31 @@ async def ws_endpoint(websocket: WebSocket):
     finally:
         if websocket in ws_clients:
             ws_clients.remove(websocket)
+
+
+# ── Serve React Build ─────────────────────────────────────────────
+# After all API routes so the catch-all doesn't swallow /api/* paths.
+
+import pathlib as _pathlib
+_BUILD = _pathlib.Path(__file__).parent.parent / "frontend" / "build"
+
+if _BUILD.exists():
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse as _FileResponse
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=_BUILD / "static"),
+        name="react-static",
+    )
+
+    # Serve any other path as the SPA index (React Router handles the rest)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str):
+        index = _BUILD / "index.html"
+        return _FileResponse(str(index))
+else:
+    logger.warning(
+        "React build not found at %s — run `npm run build` inside frontend/",
+        _BUILD,
+    )

@@ -1,18 +1,38 @@
 #!/bin/bash
-# Script to launch the Symbolic LLM Production UI from Google Colab with ngrok auth.
+# Colab launcher: builds React UI and starts FastAPI (port 8000) + LocalTunnel.
+# Run from the repo root: bash launch_colab.sh
 
-echo "⚡ Setting up Colab Production UI"
-pip install -q streamlit pyngrok
+set -e
 
-# Provide Ngrok Token if not set
-if [ -z "$NGROK_AUTH_TOKEN" ]; then
-  read -p "Enter your Ngrok Auth Token (https://dashboard.ngrok.com/get-started/your-authtoken): " token
-  export NGROK_AUTH_TOKEN=$token
-fi
+echo ""
+echo "═══════════════════════════════════════════════════"
+echo "  RAG Engine — Colab Launcher"
+echo "═══════════════════════════════════════════════════"
 
-echo "🚀 Launching Streamlit Backend..."
-streamlit run app.py &>/dev/null &
+# 1. Python deps
+echo "▶ Installing Python dependencies..."
+pip install -q fastapi uvicorn[standard] python-multipart
 
-sleep 3
-echo "✅ Done! Check the tunnel URL above to access the UI."
-tail -f /dev/null
+# 2. Build React frontend
+echo "▶ Building React frontend..."
+cd frontend
+npm install --legacy-peer-deps --silent
+npm run build
+cd ..
+echo "✓ React build complete."
+
+# 3. Start FastAPI (serves API + React build)
+echo "▶ Starting FastAPI server on port 8000..."
+nohup uvicorn backend.server:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &
+sleep 4
+
+# 4. Tunnel
+IP=$(curl -s https://ipv4.icanhazip.com)
+echo ""
+echo "═══════════════════════════════════════════════════"
+echo "  TUNNEL PASSWORD: ${IP}"
+echo "  (Enter this IP at the loca.lt splash page)"
+echo "═══════════════════════════════════════════════════"
+echo ""
+
+npx localtunnel --port 8000
