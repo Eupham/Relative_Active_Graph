@@ -38,6 +38,8 @@ A final optional cell sends SIGTERM to all started processes.
 **Note:** The launcher is designed for local notebooks and Colab-style runtimes.
 If `npm run build` fails due stale dependencies, `colab_launch.py` retries with a
 clean install automatically.
+If you run npm manually, do it inside `frontend/` (not repo root), e.g.
+`cd frontend && npm install`.
 
 ---
 

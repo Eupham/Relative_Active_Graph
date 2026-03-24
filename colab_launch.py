@@ -9,8 +9,25 @@ import sys
 import time
 import urllib.request
 
-ROOT = os.path.abspath(".")
+def resolve_root() -> str:
+    candidates = [
+        os.path.abspath("."),
+        os.path.abspath("./Relative_Active_Graph"),
+        "/content/Relative_Active_Graph",
+    ]
+    for c in candidates:
+        if os.path.exists(os.path.join(c, "frontend", "package.json")) and os.path.exists(os.path.join(c, "backend", "server.py")):
+            return c
+    raise FileNotFoundError(
+        "Could not locate repo root. Expected frontend/package.json and backend/server.py. "
+        "Run `%cd Relative_Active_Graph` in Colab before launching."
+    )
+
+
+ROOT = resolve_root()
+os.chdir(ROOT)
 FRONTEND = os.path.join(ROOT, "frontend")
+print(f"▶ Repo root: {ROOT}")
 
 
 def run(cmd, *, cwd=None, env=None, check=True):

@@ -4,6 +4,15 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ ! -f "frontend/package.json" ]; then
+  echo "ERROR: frontend/package.json not found."
+  echo "Run this script from the repository root or keep the script in the repo root."
+  exit 1
+fi
+
 echo ""
 echo "═══════════════════════════════════════════════════"
 echo "  RAG Engine — Colab Launcher"
