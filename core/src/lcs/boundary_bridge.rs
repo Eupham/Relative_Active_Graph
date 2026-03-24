@@ -16,7 +16,7 @@
 //!   3. Send to Python BoundaryInducer.register_rule(cfg_rule_dict).
 
 use serde::{Serialize, Deserialize};
-use crate::types::{TypeCategory, ModalMode};
+use crate::types::ModalMode;
 use crate::semantics::{MetaGrammarEngine, GrammarRule, TypedFact};
 
 /// A context-free grammar rule in the format expected by BoundaryInducer.
@@ -126,7 +126,7 @@ pub fn rules_to_json(rules: &[CfgRule]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModalType, Direction};
+    use crate::types::{ModalType, Direction, TypeCategory};
     use crate::arg::{ArgNode, NodeClass};
 
     fn make_leaf_node(id: u64, cat: u32) -> ArgNode {
