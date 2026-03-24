@@ -22,9 +22,8 @@
 //! Connection to §18: the full rule set is used by LSystemExpander during
 //! inference to expand non-terminal nodes into sub-graphs.
 
-use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use crate::types::{TypeCategory, ModalMode, Direction, NodeId};
+use crate::types::{TypeCategory, ModalMode, Direction};
 use crate::arg::ArgNode;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -55,11 +54,22 @@ impl GrammarRule {
             mode:      node_b.mtlg_type.mode,
             direction: node_b.mtlg_type.direction,
         };
-        // Consequent: Diamond mode, direction inferred from node_a, category DEFAULT.
-        // The MetaGrammar refines this via unification as evidence accumulates.
+        // Infer consequent mode from antecedents:
+        // - Box (contraction) dominates: if any antecedent is Box, the composition
+        //   shares structure → consequent is Box (recursive subgraph).
+        // - Lozenge (displacement) propagates: if any antecedent is Lozenge,
+        //   the composition has discontinuous structure.
+        // - Otherwise Diamond (primary linear composition).
+        let consequent_mode = if fact_a.mode == ModalMode::Box || fact_b.mode == ModalMode::Box {
+            ModalMode::Box
+        } else if fact_a.mode == ModalMode::Lozenge || fact_b.mode == ModalMode::Lozenge {
+            ModalMode::Lozenge
+        } else {
+            ModalMode::Diamond
+        };
         let consequent = TypedFact {
             category:  TypeCategory::DEFAULT,
-            mode:      ModalMode::Diamond,
+            mode:      consequent_mode,
             direction: fact_a.direction,
         };
         let id = {

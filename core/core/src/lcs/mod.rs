@@ -5,6 +5,7 @@ pub mod token_types;
 pub mod converter;
 pub mod category_registry;
 pub mod bootstrap_loader;
+pub mod boundary_bridge;
 
 pub use token_types::{Token, TokenSentence, TokenStructure, fnv_hash, fnv1a_64_bytes, stable_node_id, extract_features};
 pub use converter::{
@@ -16,3 +17,4 @@ pub use converter::{
 };
 pub use category_registry::{CategoryRegistry, CategoryEntry};
 pub use bootstrap_loader::{BootstrapArtefacts, TrdProfile, load_bootstrap};
+pub use boundary_bridge::{CfgRule, BoundaryType, export_boundary_rules, export_all_rules, rules_to_json};
