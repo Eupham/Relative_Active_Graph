@@ -3,17 +3,9 @@ import sys
 import time
 import threading
 import streamlit as st
-from pyngrok import ngrok
 
 # Must be called first
 st.set_page_config(page_title="Symbolic Generative LLM", page_icon="⚛️", layout="wide")
-
-def init_ngrok():
-    auth_token = os.environ.get("NGROK_AUTH_TOKEN")
-    if auth_token:
-        ngrok.set_auth_token(auth_token)
-        public_url = ngrok.connect(8501)
-        print(f"\n[PRODUCTION COLAB UI] Ngrok Tunnel URL: {public_url}\n")
 
 def main():
     # Display UI Aesthetics
@@ -88,11 +80,4 @@ def main():
                 st.metric(label="Active Graph Nodes", value="114")
 
 if __name__ == '__main__':
-    # In Colab context, NGROK_AUTH_TOKEN is expected in the environment.
-    # Check if we should initialize the tunnel by seeing if script was just launched
-    # (Streamlit restarts this script on every UI change, so we avoid reconnecting ngrok).
-    if 'NGROK_TUNNEL_ACTIVE' not in os.environ:
-        os.environ['NGROK_TUNNEL_ACTIVE'] = "1"
-        init_ngrok()
-        
     main()
