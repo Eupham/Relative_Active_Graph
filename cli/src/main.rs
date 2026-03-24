@@ -5,7 +5,7 @@ use std::io::{self, BufRead, Write};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use csrre_core::{
-    Engine, Query, Quality,
+    Engine, Query,
     arg::{ArgNode, NodeClass, ArgEdge, EdgeClass},
     types::{ModalType, ModalMode, TypeCategory, Direction, TRDId},
     engine::TokenStep,

@@ -86,11 +86,6 @@ impl VocabDistribution {
     }
 }
 
-/// Stable node hash via FNV-1a (delegates to token_types::stable_node_id).
-fn stable_node_id(predicate: &str) -> NodeId {
-    crate::lcs::stable_node_id(predicate)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

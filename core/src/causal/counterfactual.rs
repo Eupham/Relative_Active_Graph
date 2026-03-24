@@ -1,11 +1,10 @@
 //! Counterfactual reasoning: "what would have happened if edge e had been absent?"
 //! Combines SCM intervention + BF-ATMS scope + causal bootstrapping into a unified API.
 
-use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, TRDId, Env, Quality};
+use crate::types::{EdgeId, TRDId, Env, Quality};
 use crate::causal::{
     scm::Scm,
-    bootstrap::{CausalBootstrapper, QualitySample, BootstrapResult, compute_causal_delta},
+    bootstrap::{CausalBootstrapper, QualitySample, compute_causal_delta},
     intervention::{do_absent, InterventionResult},
 };
 use crate::adaptive::CausalTransitionRegistry;
@@ -72,7 +71,8 @@ impl CounterfactualReasoner {
             // Sufficient samples: bootstrapped attributional score with CI (§13)
             let result    = self.bootstrapper.estimate_attributional_score(edge_id, trd_id);
             let frequency = self.bootstrapper.frequency_in_trd(edge_id, trd_id);
-            compute_causal_delta(&result, frequency)
+            let tcs = self.estimate_type_consistency(edge_id, graph);
+            compute_causal_delta(&result, frequency, tcs)
         } else {
             // Insufficient samples: correlational score only
             self.transition.correlational_score(edge_id, trd_id)
@@ -87,7 +87,7 @@ impl CounterfactualReasoner {
             return 0.5;
         };
         let edge = &graph[ei];
-        let (src_idx, dst_idx) = graph.edge_endpoints(ei).unwrap();
+        let (src_idx, _dst_idx) = graph.edge_endpoints(ei).unwrap();
         let src_mode = graph[src_idx].mtlg_type.mode;
         let edge_mode = edge.modal_mode;
         if src_mode == edge_mode { 1.0 } else { 0.0 }

@@ -9,7 +9,7 @@
 //! Use this score as a heuristic ranking signal, not a causal claim.
 
 use rand::prelude::*;
-use crate::types::{NodeId, EdgeId, TRDId, Quality};
+use crate::types::{EdgeId, TRDId};
 
 pub const N_BOOTSTRAP: usize = 200;
 const CI_LOWER_PERCENTILE: f64 = 2.5;
@@ -139,13 +139,13 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 /// Combined Δ(e, d): point estimate when reliable, frequency-weighted otherwise.
-pub fn compute_causal_delta(result: &BootstrapResult, frequency: f64) -> f64 {
+pub fn compute_causal_delta(result: &BootstrapResult, frequency: f64, type_consistency: f64) -> f64 {
     if result.is_reliable {
-        result.point_estimate * frequency
+        result.point_estimate * frequency * type_consistency
     } else {
         // Correlational proxy: frequency alone, discounted by uncertainty.
         let uncertainty = (result.ci_upper - result.ci_lower).max(0.0);
-        frequency * (1.0 - uncertainty.min(1.0))
+        frequency * (1.0 - uncertainty.min(1.0)) * type_consistency
     }
 }
 

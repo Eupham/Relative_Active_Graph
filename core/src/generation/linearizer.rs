@@ -3,8 +3,7 @@
 //! in the target language. Language selected by TRD / query context.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, TRDId, ModalType, ModalMode, TypeCategory, Env, Direction};
-use crate::arg::{ArgGraph, ArgNode};
+use crate::types::{NodeId, EdgeId, ModalType, Direction};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::generation::hypothesis::Hypothesis;
 
@@ -167,6 +166,7 @@ mod tests {
     use super::*;
     use crate::generation::hypothesis::Hypothesis;
     use crate::semantics::mtlg_semantics::PropositionGraph;
+    use crate::types::{ModalMode, TypeCategory};
 
     #[test]
     fn linearizes_with_lexicon() {

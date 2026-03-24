@@ -170,7 +170,7 @@ impl ContextStack {
         self.next_tr_id += 1;
         let ctx_id = self.frames.last().map(|f| f.id).unwrap_or(0);
         let depth  = self.frames.len();
-        let mut tr = Tr::new(id, ctx_id, content.clone(), env, mtlg_type, granularity);
+        let tr = Tr::new(id, ctx_id, content.clone(), env, mtlg_type, granularity);
         if let Some(frame) = self.frames.last_mut() {
             frame.drs.extend_from_tr_at_depth(&content, depth);
             frame.active_trs.push(tr);

@@ -3,8 +3,8 @@
 //! MAX_NODES_PER_CONTEXT budget and TRD-relative activation thresholds.
 
 use std::collections::HashSet;
-use crate::types::{NodeId, TRDId, Env};
-use crate::arg::{ArgGraph, ArgNode};
+use crate::types::{NodeId, TRDId};
+use crate::arg::ArgGraph;
 use crate::scheduler::dependency::priority_order;
 use crate::adaptive::{PerfRegistry, ThresholdRegistry};
 use petgraph::visit::EdgeRef;
@@ -47,7 +47,7 @@ impl ArgTraverser {
             .map(|trd| thresholds.theta_alpha(trd))
             .unwrap_or(0.4);
 
-        for (node_id, priority) in priorities {
+        for (node_id, _priority) in priorities {
             if self.steps.len() >= self.budget { break; }
             if self.visited.contains(&node_id) { continue; }
 

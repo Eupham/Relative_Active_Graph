@@ -2,8 +2,7 @@
 //! Variable capture in substitute() is correctly handled via free variable analysis.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, ModalType, ModalMode, TypeCategory};
-use crate::arg::transient_repr::RepContent;
+use crate::types::{ModalType, TypeCategory};
 
 // ─── Lambda terms ─────────────────────────────────────────────────────────────
 
@@ -49,7 +48,7 @@ impl LambdaTerm {
     pub fn reduce_one_normal_order(self) -> Option<LambdaTerm> {
         match self {
             LambdaTerm::App(f, arg) => {
-                if let LambdaTerm::Abs(var, ty, body) = *f {
+                if let LambdaTerm::Abs(var, _ty, body) = *f {
                     // Outermost redex — reduce it.
                     Some(substitute(*body, &var, &arg))
                 } else {

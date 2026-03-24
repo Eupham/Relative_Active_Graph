@@ -1,5 +1,5 @@
-use csrre_core::generation::hypothesis::{Hypothesis, generate_hypotheses, filter_satisfying};
-use csrre_core::generation::linearizer::{Linearizer, LexEntry, PerLanguageLexicon};
+use csrre_core::generation::hypothesis::{Hypothesis, filter_satisfying};
+use csrre_core::generation::linearizer::{Linearizer, LexEntry};
 use csrre_core::semantics::mtlg_semantics::{MtlgSemantics, PropositionGraph};
 use csrre_core::types::{ModalType, ModalMode, TypeCategory, Direction};
 use csrre_core::arg::{ArgGraph, ArgNode, NodeClass};
@@ -22,7 +22,7 @@ fn create_mock_node(id: u64, surface: &str, score: f32) -> ArgNode {
 #[test]
 fn test_generative_inference_pipeline() {
     // 1. Setup Semantic and Lexicon Context
-    let sem = MtlgSemantics::new();
+    let _sem = MtlgSemantics::new();
     let mut type_map = HashMap::new();
     type_map.insert(
         "run".into(),
@@ -49,8 +49,8 @@ fn test_generative_inference_pipeline() {
 
     // 2. Build mock ARG Graph
     let mut g: ArgGraph = StableGraph::new();
-    let run_node = g.add_node(create_mock_node(1, "run", 0.9));
-    let alice_node = g.add_node(create_mock_node(2, "alice", 0.8));
+    let _run_node = g.add_node(create_mock_node(1, "run", 0.9));
+    let _alice_node = g.add_node(create_mock_node(2, "alice", 0.8));
 
     // We can simulate hypothesis generation logic manually as `generate_hypotheses` requires `PerfRegistry`.
     // Since we're demonstrating the pipeline, let's manually build a Hypothesis like the search module would
