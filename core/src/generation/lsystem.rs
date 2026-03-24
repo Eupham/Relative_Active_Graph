@@ -16,7 +16,7 @@
 //! Springer-Verlag. Chapter 1 (DOL-systems and context-free L-systems).
 
 use std::collections::HashMap;
-use crate::types::{NodeId, TypeCategory, ModalMode, ModalType, Direction, Env};
+use crate::types::{NodeId, ModalType, Env};
 use crate::arg::ArgNode;
 use crate::semantics::meta_grammar::{MetaGrammarEngine, GrammarRule, TypedFact};
 

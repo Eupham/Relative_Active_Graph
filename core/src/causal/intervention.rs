@@ -4,12 +4,10 @@
 //! The SCM intervention targets the *child* node of the removed edge
 //! (Pearl do-calculus: cut the incoming structural equation of dst, not zero src).
 
-use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, TRDId, Env};
+use crate::types::{NodeId, EdgeId, Env};
 use crate::atms::causal::{BfAtms, CounterfactualScope};
-use crate::atms::base::env::singleton;
 use crate::causal::scm::Scm;
-use crate::arg::{ArgGraph, ArgEdge};
+use crate::arg::ArgGraph;
 use petgraph::visit::EdgeRef;
 
 #[derive(Debug)]
@@ -24,7 +22,7 @@ pub struct InterventionResult {
 fn build_bf_atms(
     graph:      &ArgGraph,
     scope:      &CounterfactualScope,
-    active_env: Env,
+    _active_env: Env,
 ) -> BfAtms {
     let mut bf = BfAtms::new(scope.clone());
     for idx in graph.node_indices() {

@@ -2,11 +2,10 @@
 //! TypeCategory::DEFAULT acts as a wildcard in filter_satisfying.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory, Env, Direction};
-use crate::arg::{ArgGraph, ArgNode, NodeClass, search::ArgSearch};
+use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory};
+use crate::arg::{ArgGraph, ArgNode};
 use crate::semantics::mtlg_semantics::{MtlgSemantics, LambdaTerm, PropositionGraph};
 use crate::adaptive::PerfRegistry;
-use petgraph::visit::EdgeRef;
 
 pub const N_HYPOTHESES: usize = 5;
 

@@ -3,13 +3,11 @@
 //! via exact inference and graphical mutilation.
 //! Language: V = observed variables (ARG nodes), U = exogenous noise, F = structural equations.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use crate::types::{NodeId, EdgeId, TRDId};
-use crate::arg::math_utils::sample_discrete_noise;
-use ndarray::{Array1, Array2, array};
+use crate::types::NodeId;
 // numerica crate incorporated for streamlined math integrations
-use numerica::*; 
+
 
 /// True probability distribution for Exogenous Variables (U).
 #[derive(Clone, Debug, Serialize, Deserialize)]

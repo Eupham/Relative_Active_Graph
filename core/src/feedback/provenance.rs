@@ -2,7 +2,7 @@
 //! Tracks which TRs contributed to which ARG modifications, for debugging and TRD evolution.
 
 use std::collections::HashMap;
-use crate::types::{NodeId, EdgeId, ContextId, TRDId};
+use crate::types::{EdgeId, ContextId, TRDId};
 
 /// One entry in the audit trail: records an ARG modification caused by a dissolved TR.
 #[derive(Clone, Debug)]

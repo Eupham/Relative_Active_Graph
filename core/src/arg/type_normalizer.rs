@@ -47,7 +47,7 @@ impl TypeNormalizer {
         let node_ids: Vec<u64> = graph.node_indices().map(|i| graph[i].id).collect();
         for nid in node_ids {
             if let Some(ni) = graph.node_indices().find(|&i| graph[i].id == nid) {
-                let arity = graph[ni].mtlg_type.arity;
+                let _arity = graph[ni].mtlg_type.arity;
                 let (new_mode, new_cat) = normalize_type(
                     graph[ni].mtlg_type.mode,
                     graph[ni].mtlg_type.category,

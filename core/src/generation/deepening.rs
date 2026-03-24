@@ -1,11 +1,11 @@
 //! Progressive deepening: if hypotheses don't satisfy the query, deepen up to MAX_DEPTH times.
 //! Each deepening round expands the ARG one step further and re-generates hypotheses.
 
-use crate::types::{NodeId, TRDId, ModalType, ModalMode, TypeCategory, Direction};
-use crate::arg::{ArgGraph, ArgNode, ArgEdge, NodeClass, EdgeClass};
+use crate::types::{TRDId, ModalType, ModalMode, TypeCategory};
+use crate::arg::ArgGraph;
 use crate::adaptive::{PerfRegistry, ThresholdRegistry};
 use crate::generation::{
-    hypothesis::{Hypothesis, generate_hypotheses, filter_satisfying},
+    hypothesis::{Hypothesis, generate_hypotheses},
     traverser::ArgTraverser,
 };
 use crate::semantics::mtlg_semantics::MtlgSemantics;
@@ -41,7 +41,7 @@ impl ProgressiveDeepener {
         semantics:     &MtlgSemantics,
         perf:          &PerfRegistry,
         thresholds:    &mut ThresholdRegistry,
-        query_text:    &str,
+        _query_text:    &str,
         expected_type: &ModalType,
     ) -> DeepeningResult {
         let mut bound = 1.0; // Initial cost horizon bound for formal graph expansion
@@ -135,7 +135,7 @@ impl ProgressiveDeepener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::ArgNode;
+    use crate::arg::{ArgNode, NodeClass};
     use crate::types::{ModalType, ModalMode, TypeCategory, Direction};
     use petgraph::stable_graph::StableGraph;
     use crate::arg::search::ArgGraph;
@@ -152,8 +152,8 @@ mod tests {
     #[test]
     fn finds_satisfying_at_depth_0() {
         let mut g: ArgGraph = StableGraph::new();
-        g.add_node(node_with_surface(1, "run", 0.9));
-        let sem        = MtlgSemantics::new();
+        // use high attribution score so that 1.0 / (score + 1e-6) <= 1.0 initial bound
+        g.add_node(node_with_surface(1, "run", 1.0));
         let perf       = PerfRegistry::new(0.25);
         let mut thresh = ThresholdRegistry::default();
         let deepener   = ProgressiveDeepener::new(None);

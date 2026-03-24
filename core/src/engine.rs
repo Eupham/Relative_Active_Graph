@@ -6,31 +6,30 @@
 use std::collections::HashMap;
 use std::path::Path;
 use serde::{Serialize, Deserialize};
-use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, ModalMode, TypeCategory, Direction, Env, Situation};
+use crate::types::{NodeId, EdgeId, TRDId, Quality, ModalType, ModalMode, TypeCategory, Env};
 use crate::atms::BaseAtms;
 use crate::arg::{
-    ContextStack, ArgGraph, ArgSearch, ArgNode, ArgEdge, NodeClass, EdgeClass,
+    ContextStack, ArgGraph, ArgSearch, ArgNode, ArgEdge,
     PassageContext, SlotOccupancyTracker,
     transient_repr::{RepContent, Granularity},
     egraph_adapter::ArgEGraph,
     memoization::{GraphicaCache, CachedResult, build_key},
     type_normalizer::TypeNormalizer,
 };
-use crate::adaptive::{PerfRegistry, ThresholdRegistry, CausalTransitionRegistry};
-use crate::constraints::{validate_shapes, check_sheaf_coherence, build_stalks, default_constraints, check_mode_consistency, SheafResult};
+use crate::adaptive::{PerfRegistry, ThresholdRegistry};
+use crate::constraints::{validate_shapes, check_sheaf_coherence, build_stalks, default_constraints};
 use crate::scheduler::{ExecStateTable, NodeExecState, build_schedule};
 use crate::causal::CounterfactualReasoner;
 use crate::semantics::{MtlgSemantics, MetaGrammarEngine};
 use crate::rules::{RulerBridge, RuleLifecycleManager};
-use crate::feedback::{AttributionEngine, ProvenanceLog, apply_trace};
+use crate::feedback::{AttributionEngine, ProvenanceLog};
 use crate::feedback::provenance::AuditEntry;
 use crate::feedback::update::{
     propagate_attribution_backward, apply_attribution, apply_weight_decay,
     propagate_edge_to_node_scores, apply_nogood_consequences,
 };
-use crate::generation::{ProgressiveDeepener, Linearizer, DeepeningResult, VocabDistribution, Hypothesis};
+use crate::generation::{ProgressiveDeepener, Linearizer, VocabDistribution};
 use crate::generation::linearizer::LexEntry;
-use crate::semantics::mtlg_semantics::PropositionGraph;
 use crate::lcs::converter::CategoryInducer;
 use crate::lcs::token_types::TokenStructure;
 
@@ -439,7 +438,7 @@ impl Engine {
         &mut self,
         trd:       TRDId,
         sentences: Vec<Vec<TokenStep>>,
-        language:  &str,
+        _language:  &str,
     ) -> SequenceTrainResult {
         // Push ATMS context for the passage
         let ctx_id     = self.context_stack.push(trd as u64, Some(trd));
@@ -764,7 +763,8 @@ impl Default for Engine { fn default() -> Self { Self::new() } }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arg::ArgNode;
+    use crate::arg::{ArgNode, NodeClass};
+    use crate::types::{ModalMode, TypeCategory, Direction};
 
     fn make_node(id: u64, surface: &str, score: f32) -> ArgNode {
         let mut n = ArgNode::new(id, NodeClass::DEFAULT,

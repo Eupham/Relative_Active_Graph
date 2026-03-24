@@ -13,9 +13,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Serialize, Deserialize};
-use crate::types::{TypeCategory, ModalMode, ModalType, Direction, NodeId, EdgeId, Env};
+use crate::types::{TypeCategory, ModalMode, ModalType, Direction, NodeId};
 use crate::arg::{ArgNode, ArgEdge, NodeClass, EdgeClass};
-use super::token_types::{Token, TokenSentence, TokenStructure, extract_features, fnv_hash, stable_node_id, fnv1a_64_bytes};
+use super::token_types::{TokenSentence, TokenStructure, extract_features, fnv1a_64_bytes};
 
 // ── Feature vector (kept for compatibility) ───────────────────────────────────
 

@@ -2,7 +2,6 @@
 //! Validates that ARG subgraphs satisfy declared shape constraints.
 //! Shapes are defined as rules over node types, edge types, and modal modes.
 
-use std::collections::HashMap;
 use crate::types::{NodeId, ModalMode};
 use crate::arg::{ArgGraph};
 use petgraph::visit::EdgeRef;

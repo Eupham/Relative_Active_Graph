@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use crate::types::{EdgeId, TRDId, Quality};
 use crate::adaptive::CausalTransitionRegistry;
-use crate::causal::bootstrap::{CausalBootstrapper, QualitySample, BootstrapResult, compute_causal_delta};
+use crate::causal::bootstrap::{CausalBootstrapper, QualitySample, compute_causal_delta};
 use crate::arg::ArgGraph;
 
 /// Attribution score for one edge in one TRD.
@@ -77,7 +77,8 @@ impl AttributionEngine {
         let delta = if is_causal {
             let result    = self.bootstrapper.estimate_attributional_score(edge_id, trd_id);
             let frequency = self.bootstrapper.frequency_in_trd(edge_id, trd_id);
-            compute_causal_delta(&result, frequency)
+            let tcs = self.type_consistency_score(edge_id, graph);
+            compute_causal_delta(&result, frequency, tcs)
         } else {
             self.correlational_score(edge_id, trd_id)
         };

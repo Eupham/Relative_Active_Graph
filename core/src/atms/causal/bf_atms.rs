@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use crate::types::{NodeId, Env};
 use super::scope::CounterfactualScope;
-use crate::atms::base::env::{singleton, union, subsumes};
+use crate::atms::base::env::subsumes;
 
 /// Maximum label set size (k in BF-ATMS). Polynomial guarantee holds for k ≤ 4.
 const MAX_LABEL_COMPLEXITY: usize = 4;

@@ -9,15 +9,12 @@
 //! The Betti number $b_1$ (dimension of $H^1$) physically quantifies the number of 
 //! global topological obstructions (local consistencies failing to extend globally).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use crate::types::{NodeId, ModalType, ModalMode, Direction};
 use crate::arg::{ArgGraph, ArgEdge};
 use petgraph::visit::EdgeRef;
-use petgraph::stable_graph::NodeIndex;
 // Numerica and graphica external integration points
-use numerica::*;
-use graphica::*;
-use ndarray::{Array2, Axis};
+use ndarray::Array2;
 
 #[derive(Debug)]
 pub struct CoherenceViolation {

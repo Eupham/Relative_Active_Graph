@@ -4,9 +4,9 @@
 //!  the logic here is equivalent for the modal fragment actually used in CSRRE.)
 
 use std::collections::HashMap;
-use crate::types::{ModalType, ModalMode, TypeCategory, Direction};
+use crate::types::{ModalType, ModalMode, Direction};
 use z3::{Config, Context, Solver, SatResult};
-use z3::ast::{Ast, Bool, Int};
+use z3::ast::{Ast, Int};
 
 /// A modal type constraint: asserts that `lhs` compose-with `rhs` yields `result`.
 #[derive(Clone, Debug)]
@@ -101,7 +101,7 @@ pub fn check_mode_consistency(
         node_mode_vars.insert(node_id, var);
     }
 
-    for (i, &(src, dst, edge_mode, dst_is_right)) in edges.iter().enumerate() {
+    for (_i, &(src, dst, edge_mode, dst_is_right)) in edges.iter().enumerate() {
         let src_var = match node_mode_vars.get(&src) {
             Some(v) => v,
             None => { errors.push(format!("src node {} not in Z3 environment", src)); continue; }
@@ -133,7 +133,7 @@ pub fn check_mode_consistency(
 pub fn check_box_sharing(
     functor_a: ModalType,
     functor_b: ModalType,
-    shared_arg: ModalType,
+    _shared_arg: ModalType,
 ) -> TypeCheckResult {
     if functor_a.mode != ModalMode::Box || functor_b.mode != ModalMode::Box {
         return TypeCheckResult::Invalid("box sharing requires both functors in □ mode".into());
@@ -148,6 +148,7 @@ pub fn check_box_sharing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::TypeCategory;
 
     fn d(cat: TypeCategory, arity: u8) -> ModalType {
         ModalType::functor(ModalMode::Diamond, cat, arity, Direction::Right)

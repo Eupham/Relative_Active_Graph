@@ -22,9 +22,8 @@
 //! Connection to §18: the full rule set is used by LSystemExpander during
 //! inference to expand non-terminal nodes into sub-graphs.
 
-use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use crate::types::{TypeCategory, ModalMode, Direction, NodeId};
+use crate::types::{TypeCategory, ModalMode, Direction};
 use crate::arg::ArgNode;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -8,7 +8,6 @@ use super::{
     node::BaseNode,
     justification::Justification,
     nogood::NogoodTable,
-    env::union,
 };
 
 /// The complete Horn-clause ATMS state.

@@ -97,7 +97,7 @@ impl ArgSearch {
             if self.node_count >= MAX_NODES_PER_CONTEXT { break; }
 
             if let Some((node, neighbors)) = fetch(cand.node_id) {
-                let score = node.attribution_score;
+                let _score = node.attribution_score;
                 self.try_activate(node);
                 for (edge, neighbor) in neighbors {
                     if self.try_activate(neighbor.clone()) {
@@ -125,6 +125,7 @@ impl ArgSearch {
 mod tests {
     use super::*;
     use crate::types::{ModalType, ModalMode, TypeCategory};
+    use crate::arg::NodeClass;
 
     fn make_active_node(id: NodeId, env: Env, score: f32) -> ArgNode {
         let mut n = ArgNode::new(id, NodeClass::DEFAULT, ModalType::default(), (0, 0));

@@ -2,7 +2,7 @@
 //! KBC guarantees the rule set is confluent and terminating.
 
 use std::collections::{HashMap, VecDeque};
-use crate::types::{NodeId, EdgeId, ModalType, ModalMode, TypeCategory, Direction, TRDId};
+use crate::types::{ModalType, ModalMode, TypeCategory};
 use crate::arg::transient_repr::Tr;
 use crate::arg::type_normalizer::{lpo_gt, normalize_type};
 
@@ -160,7 +160,7 @@ impl Default for RulerBridge { fn default() -> Self { Self::new() } }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModalMode, TypeCategory};
+    use crate::types::{ModalMode, TypeCategory, Direction};
 
     #[test]
     fn rule_induced_after_observations() {
