@@ -316,11 +316,14 @@ pub fn sentence_to_mtlg(sentence: &TokenSentence, mut inducer: Option<&mut Categ
             modal_mode, ucca_cat, arity: 0, structure,
         });
     }
-    let edges = (0..sentence.tokens.len().saturating_sub(1)).map(|i| {
+    let edges = (0..nodes.len().saturating_sub(1)).map(|i| {
+        // Use destination node's inferred modal mode instead of hardcoded Diamond.
+        // This lets contraction (Box) and displacement (Lozenge) edges form at the
+        // MTLG level, propagating into the ARG and enabling hypergraph structure.
         MtlgEdge {
             src_id: sentence.tokens[i].id,
             dst_id: sentence.tokens[i + 1].id,
-            modal_mode: ModalMode::Diamond, ucca_cat: None, arity: 0,
+            modal_mode: nodes[i + 1].modal_mode, ucca_cat: None, arity: 0,
         }
     }).collect();
     MtlgGraph { nodes, edges, language: sentence.language.clone(), deferred }
@@ -350,6 +353,8 @@ pub fn resolve_deferred(graphs: &mut [MtlgGraph]) -> CategoryInducer {
 
 impl MtlgGraph {
     pub fn to_arg_nodes_and_edges(&self, atms_label: u64, situation_id: u64) -> (Vec<ArgNode>, Vec<ArgEdge>) {
+        // Build token_id → contextual NodeId mapping so edges reference the correct IDs.
+        let mut token_to_node: HashMap<u32, (NodeId, ModalMode)> = HashMap::new();
         let nodes: Vec<ArgNode> = self.nodes.iter().map(|n| {
             let cat = n.ucca_cat.unwrap_or(TypeCategory::DEFAULT);
             let mt  = if n.arity > 0 {
@@ -360,6 +365,7 @@ impl MtlgGraph {
             // Use contextual_node_id: morphological fingerprint + env=0 (pre-ATMS) + inferred mode.
             // This replaces the broken `token_id as u64` which was just a position index.
             let nid = contextual_node_id(&n.structure, 0, n.modal_mode);
+            token_to_node.insert(n.token_id, (nid, n.modal_mode));
             let mut node = ArgNode::new(nid, NodeClass::DEFAULT, mt, (situation_id, 0));
             node.surface     = Some(n.text.as_bytes().to_vec());
             node.atms_label  = atms_label;
@@ -367,12 +373,15 @@ impl MtlgGraph {
             node.structure   = Some(n.structure.clone());
             node
         }).collect();
-        let mut edge_id: u64 = 1;
-        let edges: Vec<ArgEdge> = self.edges.iter().map(|e| {
-            let eid = edge_id; edge_id += 1;
-            let mut edge = ArgEdge::new(eid, e.src_id as u64, e.dst_id as u64, EdgeClass::SEQUENTIAL, ModalMode::Diamond);
+        let edges: Vec<ArgEdge> = self.edges.iter().filter_map(|e| {
+            let (src_nid, _src_mode) = token_to_node.get(&e.src_id)?;
+            let (dst_nid, dst_mode) = token_to_node.get(&e.dst_id)?;
+            // Use FNV hash of (src, dst) for stable edge identity.
+            let eid = crate::arg::passage_context::sequential_edge_id(*src_nid, *dst_nid);
+            // Edge inherits destination node's modal mode (Box for contractions, etc.)
+            let mut edge = ArgEdge::new(eid, *src_nid, *dst_nid, EdgeClass::SEQUENTIAL, *dst_mode);
             edge.weight = 0.5;
-            edge
+            Some(edge)
         }).collect();
         (nodes, edges)
     }
@@ -401,10 +410,14 @@ mod tests {
     }
 
     #[test]
-    fn all_diamond() {
+    fn edge_mode_matches_destination_node() {
         let s = sentence(&["The", "cat"]);
         let g = sentence_to_mtlg(&s, None);
-        for e in &g.edges { assert_eq!(e.modal_mode, ModalMode::Diamond); }
+        // Edge modal mode should match the destination node's inferred mode.
+        for e in &g.edges {
+            let dst_node = g.nodes.iter().find(|n| n.token_id == e.dst_id).unwrap();
+            assert_eq!(e.modal_mode, dst_node.modal_mode);
+        }
     }
 
     #[test]
