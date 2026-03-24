@@ -97,7 +97,7 @@ export function GraphGrowthChart({ history }) {
   if (!history || history.length === 0) {
     return (
       <div className="chart-card">
-        <div className="chart-title">ARG Graph Growth</div>
+        <div className="chart-title">Estimated ARG Graph Growth</div>
         <div className="chart-legend">
           <div className="legend-item"><div className="legend-dot" style={{background:NODES_COLOR}} />Nodes</div>
           <div className="legend-item"><div className="legend-dot" style={{background:EDGES_COLOR}} />Edges</div>
@@ -111,7 +111,7 @@ export function GraphGrowthChart({ history }) {
 
   return (
     <div className="chart-card">
-      <div className="chart-title">ARG Graph Growth</div>
+      <div className="chart-title">Estimated ARG Graph Growth</div>
       <div className="chart-legend">
         <div className="legend-item"><div className="legend-dot" style={{background:NODES_COLOR}} />Nodes</div>
         <div className="legend-item"><div className="legend-dot" style={{background:EDGES_COLOR}} />Edges</div>
