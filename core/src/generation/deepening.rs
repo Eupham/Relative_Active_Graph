@@ -33,8 +33,9 @@ impl ProgressiveDeepener {
         Self { max_depth: MAX_DEPTH, active_trd }
     }
 
-    /// Genuine Iterative Deepening A* (IDA*) over the semantic graph.
-    /// Heuristics are governed by the exact SCM continuous causal weights (attribution_score).
+    /// IDA*-inspired bounded DFS over the semantic graph.
+    /// Current heuristic uses inverse attribution score as a proxy cost.
+    /// Note: this is not full canonical IDA* with an admissible/consistent heuristic proof.
     pub fn run(
         &self,
         graph:         &ArgGraph,
@@ -68,7 +69,8 @@ impl ProgressiveDeepener {
                 if cost == f32::NEG_INFINITY && !satisfying_hyps.is_empty() {
                     return DeepeningResult { hypotheses: satisfying_hyps, depth_used: depth, satisfied: true };
                 }
-                bound = cost.max(bound + 1.0); // Relax formal search threshold locally
+                // Relax search bound when the current horizon is exhausted.
+                bound = cost.max(bound + 1.0);
             }
 
             if depth == self.max_depth - 1 {
@@ -78,8 +80,8 @@ impl ProgressiveDeepener {
         DeepeningResult { hypotheses: vec![], depth_used: self.max_depth, satisfied: false }
     }
 
-    /// DFS bounded strictly by SCM causal weight threshold limits.
-    /// `h(n)` represents abstract inverse cost from continuous attribution.
+    /// DFS bounded by the current deepening cost horizon.
+    /// `h(n)` uses inverse attribution as a practical ranking heuristic.
     fn ida_star_search(
         &self,
         graph: &ArgGraph,

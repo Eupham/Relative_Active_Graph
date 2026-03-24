@@ -14,8 +14,9 @@ capability.
 
 ## App Launcher — Notebook
 
-`Launch.ipynb` starts the full application stack: FastAPI backend, React dashboard,
-and Streamlit UI (fallback when npm is unavailable).
+`Launch.ipynb` starts the Colab/local launcher script (`colab_launch.py`) which
+builds the React dashboard, starts FastAPI on port 8000, and exposes it via
+LocalTunnel.
 
 Run it locally:
 
@@ -24,22 +25,19 @@ pip install notebook
 jupyter notebook Launch.ipynb
 ```
 
-The notebook is structured as four cells — run them in order:
+The notebook is structured as three cells — run them in order:
 
 | Cell | What it does |
 |------|-------------|
 | 1 | Install Python deps (`lcs/requirements.txt`, `fastapi`, `uvicorn`) |
-| 2 | Build Rust engine via `cargo build --release` (skipped if binary exists) |
-| 3 | Install React frontend deps (`npm install`) |
-| 4 | Start FastAPI on port 8000 and React on port 3000 (or Streamlit on 8501); print localhost URLs |
+| 2 | Build Rust engine via `cargo build --release` |
+| 3 | Execute `colab_launch.py` (installs npm deps, builds React, starts FastAPI on `:8000`, opens LocalTunnel) |
 
 A final optional cell sends SIGTERM to all started processes.
 
-**Note:** The notebook runs locally only. The previous Colab integration used
-`google.colab.kernel.proxyPort` and `eval_js`, which are no longer reliable across
-Colab runtime versions and have been removed. If you need Colab compatibility, open
-`Launch.ipynb`, skip the React/npm cell, and run `app.py` via Streamlit in a Colab
-cell manually.
+**Note:** The launcher is designed for local notebooks and Colab-style runtimes.
+If `npm run build` fails due stale dependencies, `colab_launch.py` retries with a
+clean install automatically.
 
 ---
 
