@@ -17,7 +17,12 @@ pip install -q fastapi uvicorn[standard] python-multipart
 echo "▶ Building React frontend..."
 cd frontend
 npm install --legacy-peer-deps --silent
-npm run build
+if ! CI=false GENERATE_SOURCEMAP=false npm run build; then
+  echo "⚠ First frontend build failed; retrying after clean install..."
+  rm -rf node_modules package-lock.json
+  npm install --legacy-peer-deps
+  CI=false GENERATE_SOURCEMAP=false npm run build
+fi
 cd ..
 echo "✓ React build complete."
 
