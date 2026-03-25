@@ -9,7 +9,6 @@ use csrre_core::{
     arg::{ArgNode, NodeClass, ArgEdge, EdgeClass},
     types::{ModalType, ModalMode, TypeCategory, Direction, TRDId},
     engine::TokenStep,
-    lcs::token_types::TokenStructure,
 };
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
@@ -124,37 +123,10 @@ fn wire_node_to_arg(w: WireNode) -> ArgNode {
         ModalType::atom(mode, cat)
     };
 
-    // Build TokenStructure from wire fields for online category induction.
-    use std::collections::BTreeSet;
-    let structure = TokenStructure {
-        token_id:              w.id as u32,
-        is_first_token:        false,
-        is_last_token:         false,
-        normalized_position:   0.5,
-        sentence_length_norm:  0.5,
-        starts_with_uppercase: w.surface.as_deref()
-            .and_then(|s| s.chars().next())
-            .map(|c| c.is_uppercase())
-            .unwrap_or(false),
-        is_punctuation:        false,
-        is_repeated:           false,
-        char_length_norm:      w.surface.as_deref()
-            .map(|s| (s.len() as f32 / 15.0).min(1.0))
-            .unwrap_or(0.3),
-        prefix2_hash:          w.prefix2_hash.unwrap_or(0) as u32,
-        suffix3_hash:          w.suffix3_hash.unwrap_or(0) as u32,
-        suffix2_hash:          w.suffix2_hash.unwrap_or(0) as u32,
-        prev_lemma_hash:       0,
-        next_lemma_hash:       0,
-        n_context_neighbors:   0,
-        char_trigram_hashes:   BTreeSet::new(),
-    };
-
     let mut node = ArgNode::new(w.id, NodeClass::DEFAULT, mt, (0, 0));
     if let Some(s) = w.surface { node.surface = Some(s.into_bytes()); }
     node.attribution_score = w.score;
     node.atms_label = 0b1;
-    node.structure = Some(structure);
     node
 }
 
