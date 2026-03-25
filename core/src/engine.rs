@@ -3,12 +3,13 @@
 //! The engine learns continuously: global_nodes and global_edges persist
 //! across all calls and are updated via EMA merging after each execution.
 
-use crate::adaptive::{CausalTransitionRegistry, PerfRegistry, ThresholdRegistry};
+use crate::adaptive::{PerfRegistry, ThresholdRegistry};
 use crate::arg::{
     egraph_adapter::ArgEGraph,
-    graphica_adapter::{build_key, GraphicaCache},
+    memoization::{build_key, CachedResult},
+    GraphicaCache,
     transient_repr::{Granularity, RepContent},
-    ArgEdge, ArgGraph, ArgNode, ArgSearch, ContextStack, EdgeClass, NodeClass, PassageContext,
+    ArgEdge, ArgGraph, ArgNode, ArgSearch, ContextStack, PassageContext,
     SlotOccupancyTracker,
 };
 use crate::atms::BaseAtms;
@@ -21,17 +22,16 @@ use crate::feedback::update::{
     apply_attribution, apply_weight_decay, propagate_attribution_backward,
     propagate_edge_to_node_scores,
 };
-use crate::feedback::{apply_trace, AttributionEngine, ProvenanceLog};
+use crate::feedback::{AttributionEngine, ProvenanceLog, AuditEntry};
 use crate::generation::linearizer::LexEntry;
 use crate::generation::{
-    DeepeningResult, Hypothesis, Linearizer, ProgressiveDeepener, VocabDistribution,
+    Linearizer, ProgressiveDeepener, VocabDistribution,
 };
 use crate::rules::{RuleLifecycleManager, RulerBridge};
-use crate::scheduler::{build_schedule, ExecStateTable, NodeExecState};
-use crate::semantics::mtlg_semantics::PropositionGraph;
+use crate::semantics::MetaGrammarEngine;
 use crate::semantics::MtlgSemantics;
 use crate::types::{
-    Direction, EdgeId, Env, ModalMode, ModalType, NodeId, Quality, Situation, TRDId, TypeCategory,
+    EdgeId, ModalMode, ModalType, NodeId, Quality, TRDId,
 };
 use std::collections::HashMap;
 
@@ -163,9 +163,6 @@ impl Engine {
         let node_pool_snapshot = node_pool.clone();
         let edge_pool_snapshot = edge_pool.clone();
 
-        // Collect structures for category refit
-        for n in &node_pool { if let Some(ref s) = n.structure { self.pending_structures.push(s.clone()); } }
-
         // ARG expansion
         let mut search = ArgSearch::new(active_env, theta_alpha, theta_rho);
         for node in node_pool {
@@ -174,19 +171,18 @@ impl Engine {
         for edge in edge_pool {
             search.try_add_edge(edge);
         }
-        let graph = &search.graph;
 
         // ── 4. Constraint checks ─────────────────────────────────────────────
-        let shacl_violations = validate_shapes(graph, &default_constraints());
+        let shacl_violations = validate_shapes(&search.graph, &default_constraints());
         if !shacl_violations.is_empty() {
             log::warn!("SHACL: {} violations in G(s)", shacl_violations.len());
         }
-        let stalks = build_stalks(graph);
-        let sheaf_result = check_sheaf_coherence(graph, &stalks);
+        let stalks = build_stalks(&search.graph);
+        let sheaf_result = check_sheaf_coherence(&search.graph, &stalks);
         if !sheaf_result.is_coherent() {
             log::warn!(
                 "Sheaf violations={}: {} triangle inconsistencies",
-                sheaf_result.violation_count,
+                sheaf_result.violations.len(),
                 sheaf_result.violations.len()
             );
         }
@@ -198,7 +194,7 @@ impl Engine {
         if self.graphica.get(&cache_key).is_none() {
             self.egraph.saturate();
             self.graphica
-                .insert(crate::arg::graphica_adapter::CachedResult {
+                .insert(CachedResult {
                     key: cache_key,
                     edge_deltas: HashMap::new(),
                     quality: 0.0,
@@ -278,7 +274,7 @@ impl Engine {
         // ── 7. Progressive deepening + generation ─────────────────────────────
         let deepener = ProgressiveDeepener::new(trd);
         let dr = deepener.run(
-            graph,
+            &search.graph,
             &self.semantics,
             &self.perf,
             &mut self.thresholds,
@@ -467,11 +463,8 @@ impl Engine {
         let mut prev_node_id: Option<NodeId> = None;
 
         // Incremental forward pass with CE teacher forcing
-        for sentence in &enriched {
+        for sentence in &sentences {
             for step in sentence {
-                for n in &step.node_pool {
-                    if let Some(ref s) = n.structure { self.pending_structures.push(s.clone()); }
-                }
                 let search = passage.step(
                     step.expected_node_id, &step.node_pool, &step.edge_pool,
                     active_env, theta_alpha, theta_rho, prev_node_id,
@@ -562,7 +555,7 @@ impl Engine {
 
         // Provenance
         self.provenance.record(AuditEntry {
-            tr_id: self.tr_counter, context_id: ctx_id, trd_id: Some(trd),
+            tr_id: self.tr_counter, context_id: 0, trd_id: Some(trd),
             edges_updated: attributed_edges.iter().map(|&e| (e, 0.0f32)).collect(),
             quality: final_quality.as_f32(),
         });
@@ -580,8 +573,6 @@ impl Engine {
         }
 
         self.last_graph = Some(final_graph);
-        self.enforce_budget();
-        self.maybe_refit_categories();
 
         SequenceTrainResult {
             steps_processed: total_steps,
@@ -643,13 +634,22 @@ impl Engine {
         let active_env = self.context_stack.current_env();
 
         let mut passage = PassageContext::new(trd);
+        let meta_grammar = MetaGrammarEngine::new(0.0);
         passage.absorb_sentence(seed_nodes, seed_edges);
         let mut output: Vec<NodeId> = Vec::new();
         let mut prev: Option<NodeId> = None;
         for _ in 0..max_tokens {
             // Candidate pool is empty past the seed — the model generates
             // from the context it has accumulated.
-            let result = passage.decode_step(&[], &[], active_env, theta_alpha, theta_rho, prev);
+            let result = passage.decode_step(
+                &[],
+                &[],
+                active_env,
+                theta_alpha,
+                theta_rho,
+                prev,
+                &meta_grammar,
+            );
 
             let (node_id, prob) = match result {
                 Some(r) => r,

@@ -370,7 +370,6 @@ impl MtlgGraph {
             node.surface     = Some(n.text.as_bytes().to_vec());
             node.atms_label  = atms_label;
             node.attribution_score = 0.5;
-            node.structure   = Some(n.structure.clone());
             node
         }).collect();
         let edges: Vec<ArgEdge> = self.edges.iter().filter_map(|e| {
