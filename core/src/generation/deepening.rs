@@ -2,13 +2,15 @@
 //! Each deepening round expands the ARG one step further and re-generates hypotheses.
 
 use crate::adaptive::{PerfRegistry, ThresholdRegistry};
-use crate::arg::{ArgEdge, ArgGraph, ArgNode, EdgeClass, NodeClass};
+use crate::arg::{ArgGraph, NodeClass};
 use crate::generation::{
     hypothesis::{filter_satisfying, generate_hypotheses, Hypothesis},
     traverser::ArgTraverser,
 };
 use crate::semantics::mtlg_semantics::MtlgSemantics;
-use crate::types::{Direction, ModalMode, ModalType, NodeId, TRDId, TypeCategory};
+use crate::types::{Direction, ModalMode, ModalType, TRDId, TypeCategory};
+use std::collections::HashSet;
+use petgraph::visit::EdgeRef;
 
 pub const MAX_DEPTH: usize = 3;
 
