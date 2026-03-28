@@ -8,3 +8,5 @@ lexicons/
 *_trds.json
 *_lexicon.json
 .env
+node_modules/
+frontend/build/
